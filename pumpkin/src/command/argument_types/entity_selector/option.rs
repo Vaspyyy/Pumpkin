@@ -288,7 +288,10 @@ impl EntitySelectorOption {
             Self::Type => {
                 let start = parser.reader.cursor();
                 let invert = parser.consume_inverted_start();
-                if parser.has_flag(Flags::ENTITY_TYPE_INVERTED) && !invert {
+                if !invert
+                    && (parser.has_flag(Flags::ENTITY_TYPE_INVERTED)
+                        || parser.has_flag(Flags::ENTITY_TYPE_EQUALS_SET))
+                {
                     parser.reader.set_cursor(start);
                     return Err(self.inapplicable_error(parser.reader));
                 }
@@ -461,10 +464,11 @@ impl EntitySelectorOption {
             Self::Sort => !parser.is_current_entity && !parser.has_flag(Flags::SORT_SET),
             Self::Gamemode => !parser.has_flag(Flags::GAMEMODE_EQUALS_SET),
             Self::Team => !parser.has_flag(Flags::TEAM_EQUALS_SET),
-            Self::Type => !parser.has_flag(Flags::ENTITY_TYPE_EQUALS_SET),
             Self::Scores => !parser.has_flag(Flags::SCORES_SET),
             Self::Advancements => !parser.has_flag(Flags::ADVANCEMENTS_SET),
-            Self::Tag | Self::Nbt | Self::Predicate => true,
+            // Multiple negated type filters are valid, including after one positive filter.
+            // The parser rejects a second positive filter after reading the leading `!`.
+            Self::Type | Self::Tag | Self::Nbt | Self::Predicate => true,
         }
     }
 

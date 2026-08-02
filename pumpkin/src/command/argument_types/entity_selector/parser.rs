@@ -670,4 +670,18 @@ mod tests {
                 if entity_type.id == EntityType::PLAYER.id
         )));
     }
+
+    #[test]
+    fn positive_type_can_be_followed_by_negated_types() {
+        let selector = parse("@n[type=#minecraft:undead,type=!minecraft:wither]");
+        assert!(selector.predicates.iter().any(|predicate| matches!(
+            predicate,
+            EntitySelectorPredicate::EntityTypeTag(_, false)
+        )));
+        assert!(selector.predicates.iter().any(|predicate| matches!(
+            predicate,
+            EntitySelectorPredicate::EntityType(entity_type, true)
+                if entity_type.id == EntityType::WITHER.id
+        )));
+    }
 }
