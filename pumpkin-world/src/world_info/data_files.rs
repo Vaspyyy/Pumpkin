@@ -10,7 +10,8 @@ use pumpkin_nbt::{
     nbt_compress::{from_gzip_bytes, read_gzip_compound_tag, to_gzip_bytes},
     tag::NbtTag,
 };
-use serde::{Deserialize, Serialize};
+use pumpkin_util::text::{TextComponent, color::NamedColor, style::Style};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::warn;
 
 use crate::world_info::{WorldGenSettings, WorldInfoError};
@@ -414,4 +415,264 @@ pub fn write_scheduled_events_stub(
 
     pumpkin_nbt::nbt_compress::write_gzip_compound_tag(root, file)
         .map_err(|e| WorldInfoError::SerializationError(e.to_string()))
+}
+
+/// Serializable scoreboard data for `data/minecraft/scoreboard.dat`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScoreboardData {
+    #[serde(rename = "Objectives", alias = "objectives", default)]
+    pub objectives: Vec<SerializableObjective>,
+    #[serde(rename = "PlayerScores", alias = "scores", default)]
+    pub scores: Vec<SerializableScore>,
+    #[serde(rename = "Teams", alias = "teams", default)]
+    pub teams: Vec<SerializableTeam>,
+    /// Display slot bindings: slot name (e.g. "list", "sidebar") -> objective name
+    #[serde(rename = "DisplaySlots", alias = "displaySlots", default)]
+    pub display_slots: std::collections::HashMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SerializableObjective {
+    #[serde(rename = "Name", alias = "name")]
+    pub name: String,
+    #[serde(
+        rename = "DisplayName",
+        alias = "displayName",
+        default = "empty_text_component"
+    )]
+    pub display_name: SerializableTextComponent,
+    #[serde(
+        rename = "RenderType",
+        alias = "renderType",
+        default = "default_render_type"
+    )]
+    pub render_type: String,
+    #[serde(
+        rename = "CriteriaName",
+        alias = "criteriaName",
+        default = "default_criteria_name"
+    )]
+    pub criteria_name: String,
+    /// Whether the score's display name is auto-updated when the score changes.
+    #[serde(rename = "display_auto_update", alias = "displayAutoUpdate", default)]
+    pub display_auto_update: bool,
+    /// Optional number format for all scores in this objective.
+    #[serde(rename = "format", default, skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<SerializableNumberFormat>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SerializableScore {
+    #[serde(rename = "Name", alias = "entityName")]
+    pub entity_name: String,
+    #[serde(rename = "Objective", alias = "objectiveName")]
+    pub objective_name: String,
+    #[serde(rename = "Score", alias = "value")]
+    pub value: i32,
+    #[serde(rename = "Locked", alias = "locked", default = "default_true")]
+    pub locked: bool,
+    /// Optional per-score display name.
+    #[serde(rename = "display", default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<SerializableTextComponent>,
+    /// Optional per-score number format override.
+    #[serde(rename = "format", default, skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<SerializableNumberFormat>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SerializableTeam {
+    #[serde(rename = "Name", alias = "name")]
+    pub name: String,
+    #[serde(
+        rename = "DisplayName",
+        alias = "displayName",
+        default = "empty_text_component"
+    )]
+    pub display_name: SerializableTextComponent,
+    #[serde(rename = "TeamColor", default = "default_team_color")]
+    pub color: NamedColor,
+    #[serde(rename = "AllowFriendlyFire", default)]
+    pub allow_friendly_fire: bool,
+    #[serde(rename = "SeeFriendlyInvisibles", default)]
+    pub see_friendly_invisibles: bool,
+    #[serde(rename = "MemberNamePrefix", default = "empty_text_component")]
+    pub player_prefix: SerializableTextComponent,
+    #[serde(rename = "MemberNameSuffix", default = "empty_text_component")]
+    pub player_suffix: SerializableTextComponent,
+    #[serde(rename = "NameTagVisibility", default = "default_visibility")]
+    pub nametag_visibility: String,
+    #[serde(rename = "DeathMessageVisibility", default = "default_visibility")]
+    pub death_message_visibility: String,
+    #[serde(rename = "CollisionRule", default = "default_collision_rule")]
+    pub collision_rule: String,
+    #[serde(rename = "Players", alias = "players", default)]
+    pub players: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SerializableNumberFormat {
+    Blank,
+    Styled { style: Style },
+    Fixed { value: SerializableTextComponent },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SerializableTextComponent(pub TextComponent);
+
+impl Serialize for SerializableTextComponent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SerializableTextComponent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        TextComponent::deserialize(deserializer).map(Self)
+    }
+}
+
+fn empty_text_component() -> SerializableTextComponent {
+    SerializableTextComponent(TextComponent::empty())
+}
+
+const fn default_team_color() -> NamedColor {
+    NamedColor::White
+}
+
+fn default_visibility() -> String {
+    "always".to_string()
+}
+
+fn default_render_type() -> String {
+    "integer".to_string()
+}
+
+fn default_criteria_name() -> String {
+    "dummy".to_string()
+}
+
+fn default_collision_rule() -> String {
+    "always".to_string()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct ScoreboardDataFileRoot {
+    #[serde(rename = "data")]
+    data: ScoreboardData,
+    #[serde(rename = "DataVersion", default)]
+    data_version: i32,
+}
+
+pub fn read_scoreboard(level_folder: &Path) -> ScoreboardData {
+    let path = minecraft_data_dir(level_folder).join("scoreboard.dat");
+    if !path.exists() {
+        return ScoreboardData::default();
+    }
+    match File::open(&path) {
+        Ok(f) => match from_gzip_bytes::<ScoreboardDataFileRoot, _>(f) {
+            Ok(root) => root.data,
+            Err(e) => {
+                warn!("Failed to deserialize scoreboard.dat, using defaults: {e}");
+                ScoreboardData::default()
+            }
+        },
+        Err(e) => {
+            warn!("Failed to open scoreboard.dat, using defaults: {e}");
+            ScoreboardData::default()
+        }
+    }
+}
+
+pub fn write_scoreboard(
+    level_folder: &Path,
+    data: &ScoreboardData,
+    data_version: i32,
+) -> Result<(), WorldInfoError> {
+    let dir = ensure_minecraft_data_dir(level_folder)?;
+    let path = dir.join("scoreboard.dat");
+    let file = File::create(&path)?;
+    let root = ScoreboardDataFileRoot {
+        data: data.clone(),
+        data_version,
+    };
+    to_gzip_bytes(&root, BufWriter::new(file))
+        .map_err(|e| WorldInfoError::SerializationError(e.to_string()))
+}
+
+#[cfg(test)]
+mod scoreboard_tests {
+    use super::*;
+
+    #[test]
+    fn scoreboard_uses_vanilla_nbt_names_and_round_trips() {
+        let temporary_directory = tempfile::tempdir().expect("temporary directory");
+        let data = ScoreboardData {
+            objectives: vec![SerializableObjective {
+                name: "test".to_string(),
+                display_name: SerializableTextComponent(TextComponent::text("Test")),
+                render_type: "integer".to_string(),
+                criteria_name: "dummy".to_string(),
+                display_auto_update: true,
+                number_format: Some(SerializableNumberFormat::Blank),
+            }],
+            scores: vec![SerializableScore {
+                entity_name: "#constant".to_string(),
+                objective_name: "test".to_string(),
+                value: 7,
+                locked: true,
+                display: Some(SerializableTextComponent(TextComponent::text("Seven"))),
+                number_format: None,
+            }],
+            teams: vec![SerializableTeam {
+                name: "green".to_string(),
+                display_name: SerializableTextComponent(TextComponent::text("Green Team")),
+                color: NamedColor::Green,
+                allow_friendly_fire: true,
+                see_friendly_invisibles: true,
+                player_prefix: SerializableTextComponent(TextComponent::text("[G] ")),
+                player_suffix: SerializableTextComponent(TextComponent::empty()),
+                nametag_visibility: "always".to_string(),
+                death_message_visibility: "never".to_string(),
+                collision_rule: "pushOtherTeams".to_string(),
+                players: vec!["Player".to_string()],
+            }],
+            display_slots: std::iter::once(("sidebar".to_string(), "test".to_string())).collect(),
+        };
+
+        write_scoreboard(temporary_directory.path(), &data, 4903).expect("write scoreboard data");
+
+        let path = minecraft_data_dir(temporary_directory.path()).join("scoreboard.dat");
+        let root = read_gzip_compound_tag(File::open(path).expect("open scoreboard data"))
+            .expect("read scoreboard NBT");
+        assert_eq!(root.get_int("DataVersion"), Some(4903));
+        let inner = root.get_compound("data").expect("data compound");
+        assert!(inner.has("Objectives"));
+        assert!(inner.has("PlayerScores"));
+        assert!(inner.has("DisplaySlots"));
+        assert!(inner.has("Teams"));
+        assert!(!inner.has("objectives"));
+        assert!(!inner.has("scores"));
+
+        let NbtTag::Compound(objective) =
+            &inner.get_list("Objectives").expect("objectives list")[0]
+        else {
+            panic!("objective was not a compound");
+        };
+        assert_eq!(objective.get_string("Name"), Some("test"));
+        assert_eq!(objective.get_string("CriteriaName"), Some("dummy"));
+        assert!(objective.has("DisplayName"));
+        assert!(objective.has("display_auto_update"));
+
+        let NbtTag::Compound(score) = &inner.get_list("PlayerScores").expect("scores list")[0]
+        else {
+            panic!("score was not a compound");
+        };
+        assert_eq!(score.get_string("Name"), Some("#constant"));
+        assert_eq!(score.get_string("Objective"), Some("test"));
+        assert_eq!(score.get_int("Score"), Some(7));
+        assert_eq!(score.get_byte("Locked"), Some(1));
+
+        assert_eq!(read_scoreboard(temporary_directory.path()), data);
+    }
 }

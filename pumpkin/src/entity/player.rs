@@ -484,6 +484,13 @@ pub struct Player {
     pub last_sent_health: AtomicI32,
     pub last_sent_food: AtomicU8,
     pub last_food_saturation: AtomicBool,
+    // Cached values for scoreboard auto-scoring.
+    last_recorded_health_absorption: AtomicCell<f32>,
+    last_recorded_food_level: AtomicI32,
+    last_recorded_air_level: AtomicI32,
+    last_recorded_armor: AtomicI32,
+    last_recorded_experience: AtomicI32,
+    last_recorded_level: AtomicI32,
     /// The player's permission level.
     pub permission_lvl: AtomicCell<PermissionLvl>,
     pub subscribed_debug_sample: AtomicBool,
@@ -738,6 +745,12 @@ impl Player {
             last_sent_food: AtomicU8::new(0),
             last_food_saturation: AtomicBool::new(true),
             subscribed_debug_sample: AtomicBool::new(false),
+            last_recorded_health_absorption: AtomicCell::new(f32::MIN),
+            last_recorded_food_level: AtomicI32::new(i32::MIN),
+            last_recorded_air_level: AtomicI32::new(i32::MIN),
+            last_recorded_armor: AtomicI32::new(i32::MIN),
+            last_recorded_experience: AtomicI32::new(i32::MIN),
+            last_recorded_level: AtomicI32::new(i32::MIN),
             has_played_before: AtomicBool::new(false),
             chat_session: Arc::new(Mutex::new(ChatSession::default())), // Placeholder value until the player actually sets their session id
             signature_cache: Mutex::new(MessageCache::default()),
@@ -1985,15 +1998,27 @@ impl Player {
         // }
 
         // Statistics updates
-        {
+        let sneak_time = {
             let mut stats = self.stats.lock().await;
             stats.increment_custom(statistics::CustomStatistic::PlayTime, 1);
             stats.increment_custom(statistics::CustomStatistic::TotalWorldTime, 1);
             stats.increment_custom(statistics::CustomStatistic::TimeSinceDeath, 1);
             stats.increment_custom(statistics::CustomStatistic::TimeSinceRest, 1);
-            if self.living_entity.entity.sneaking.load(Ordering::Relaxed) {
-                stats.increment_custom(statistics::CustomStatistic::SneakTime, 1);
-            }
+            self.living_entity
+                .entity
+                .sneaking
+                .load(Ordering::Relaxed)
+                .then(|| {
+                    stats.increment_custom(statistics::CustomStatistic::SneakTime, 1);
+                    stats.get(
+                        statistics::StatisticCategory::Custom,
+                        statistics::CustomStatistic::SneakTime as i32,
+                    )
+                })
+        };
+        if let Some(sneak_time) = sneak_time {
+            self.update_score_for_criteria("minecraft.custom:minecraft.sneak_time", sneak_time)
+                .await;
         }
 
         {
@@ -2078,6 +2103,8 @@ impl Player {
         // experience handling
         self.tick_experience().await;
         self.tick_health().await;
+        // Update auto-computed scoreboard criteria (health, food, air, armor, xp, level)
+        self.tick_scoreboard_criteria().await;
         self.tick_maps(server).await;
 
         // Timeout/keep alive handling
@@ -2353,11 +2380,31 @@ impl Player {
         stat: i32,
         amount: i32,
     ) {
-        self.stats.lock().await.increment(category, stat, amount);
+        let value = {
+            let mut stats = self.stats.lock().await;
+            stats.increment(category, stat, amount);
+            stats.get(category, stat)
+        };
+        if let Some(criterion) = crate::world::scoreboard::statistic_criterion(category, stat) {
+            self.update_score_for_criteria(&criterion, value).await;
+        }
+        if category == statistics::StatisticCategory::Custom
+            && stat == statistics::CustomStatistic::Deaths as i32
+        {
+            self.update_score_for_criteria("deathCount", value).await;
+        }
     }
 
     pub async fn set_stat(&self, category: statistics::StatisticCategory, stat: i32, value: i32) {
         self.stats.lock().await.set(category, stat, value);
+        if let Some(criterion) = crate::world::scoreboard::statistic_criterion(category, stat) {
+            self.update_score_for_criteria(&criterion, value).await;
+        }
+        if category == statistics::StatisticCategory::Custom
+            && stat == statistics::CustomStatistic::Deaths as i32
+        {
+            self.update_score_for_criteria("deathCount", value).await;
+        }
     }
 
     pub async fn get_movement_statistic(&self) -> statistics::CustomStatistic {
@@ -2366,15 +2413,8 @@ impl Player {
             let vehicle = entity.vehicle.lock().await;
             if let Some(vehicle) = vehicle.as_ref() {
                 let entity_type = vehicle.get_entity().entity_type;
-                if entity_type == &EntityType::OAK_BOAT
-                    || entity_type == &EntityType::SPRUCE_BOAT
-                    || entity_type == &EntityType::BIRCH_BOAT
-                    || entity_type == &EntityType::JUNGLE_BOAT
-                    || entity_type == &EntityType::ACACIA_BOAT
-                    || entity_type == &EntityType::DARK_OAK_BOAT
-                    || entity_type == &EntityType::MANGROVE_BOAT
-                    || entity_type == &EntityType::CHERRY_BOAT
-                    || entity_type == &EntityType::BAMBOO_RAFT
+                if entity_type.resource_name.ends_with("_boat")
+                    || entity_type.resource_name.ends_with("_raft")
                 {
                     return statistics::CustomStatistic::BoatOneCm;
                 }
@@ -2764,6 +2804,75 @@ impl Player {
             self.last_food_saturation
                 .store(saturation == 0.0, Ordering::Relaxed);
             self.send_health().await;
+        }
+    }
+
+    /// Updates all objectives tracking the given criterion with the specified value.
+    async fn update_score_for_criteria(&self, criterion: &str, value: i32) {
+        let world = self.world();
+        let mut scoreboard = world.scoreboard.lock().await;
+        scoreboard
+            .for_all_objectives(&world, criterion, &self.gameprofile.name, value)
+            .await;
+    }
+
+    /// Checks each auto-computed criterion (health, food, air, armor, xp, level)
+    /// and updates the scoreboard when values change.
+    async fn tick_scoreboard_criteria(&self) {
+        if !self.has_client_loaded() {
+            return;
+        }
+
+        let living = &self.living_entity;
+
+        // HEALTH: health + absorption amount, ceiled to int
+        let health_absorption = living.health.load() + living.absorption.load();
+        let last_health_absorption = self.last_recorded_health_absorption.load();
+        if (health_absorption - last_health_absorption).abs() > f32::EPSILON {
+            self.last_recorded_health_absorption
+                .store(health_absorption);
+            self.update_score_for_criteria("health", health_absorption.ceil() as i32)
+                .await;
+        }
+
+        // FOOD: food level
+        let food = self.hunger_manager.level.load() as i32;
+        let last_food = self.last_recorded_food_level.load(Ordering::Relaxed);
+        if food != last_food {
+            self.last_recorded_food_level.store(food, Ordering::Relaxed);
+            self.update_score_for_criteria("food", food).await;
+        }
+
+        // AIR: air supply
+        let air = self.breath_manager.air_supply.load(Ordering::Relaxed);
+        let last_air = self.last_recorded_air_level.load(Ordering::Relaxed);
+        if air != last_air {
+            self.last_recorded_air_level.store(air, Ordering::Relaxed);
+            self.update_score_for_criteria("air", air).await;
+        }
+
+        // ARMOR: armor attribute value
+        let armor = living.get_attribute_value(&Attributes::ARMOR) as i32;
+        let last_armor = self.last_recorded_armor.load(Ordering::Relaxed);
+        if armor != last_armor {
+            self.last_recorded_armor.store(armor, Ordering::Relaxed);
+            self.update_score_for_criteria("armor", armor).await;
+        }
+
+        // XP: total experience points
+        let xp = self.experience_points.load(Ordering::Relaxed);
+        let last_xp = self.last_recorded_experience.load(Ordering::Relaxed);
+        if xp != last_xp {
+            self.last_recorded_experience.store(xp, Ordering::Relaxed);
+            self.update_score_for_criteria("xp", xp).await;
+        }
+
+        // LEVEL: experience level
+        let level = self.experience_level.load(Ordering::Relaxed);
+        let last_level = self.last_recorded_level.load(Ordering::Relaxed);
+        if level != last_level {
+            self.last_recorded_level.store(level, Ordering::Relaxed);
+            self.update_score_for_criteria("level", level).await;
         }
     }
 
