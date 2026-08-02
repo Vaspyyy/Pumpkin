@@ -111,6 +111,26 @@ fn execute_at_modifier<'a>(
     })
 }
 
+fn execute_on_vehicle_modifier<'a>(
+    context: &'a CommandContext,
+) -> crate::command::node::RedirectModifierResult<'a> {
+    Box::pin(async move {
+        let Some(entity) = &context.source.entity else {
+            return Ok(Vec::new());
+        };
+        let vehicle = entity.get_entity().vehicle.lock().await.clone();
+        let Some(vehicle) = vehicle else {
+            return Ok(Vec::new());
+        };
+
+        let mut source = context.source.as_ref().clone();
+        source.name = vehicle.get_name().get_text();
+        source.display_name = vehicle.get_display_name().await;
+        source.entity = Some(vehicle);
+        Ok(vec![Arc::new(source)])
+    })
+}
+
 fn execute_in_modifier<'a>(
     context: &'a CommandContext,
 ) -> crate::command::node::RedirectModifierResult<'a> {
@@ -752,6 +772,12 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
             literal("at").then(argument("targets", EntityArgumentType::Entities).fork(
                 Redirection::Root,
                 RedirectModifier::Custom(Arc::new(execute_at_modifier)),
+            )),
+        )
+        .then(
+            literal("on").then(literal("vehicle").redirect_with_modifier(
+                Redirection::Root,
+                RedirectModifier::Custom(Arc::new(execute_on_vehicle_modifier)),
             )),
         )
         .then(
