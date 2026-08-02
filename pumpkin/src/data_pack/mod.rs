@@ -2,6 +2,7 @@ use crate::command::CommandSender;
 use crate::command::context::command_source::CommandSource;
 use crate::command::node::dispatcher::UnifiedCommandError;
 use crate::server::Server;
+use pumpkin_data::biome::Biome;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::tag::{RegistryKey, get_registry_key_tags};
 use pumpkin_util::identifier::Identifier;
@@ -59,6 +60,7 @@ pub struct DataPackManager {
     functions: FxHashMap<Identifier, Arc<DataPackFunction>>,
     tags: FxHashMap<Identifier, Vec<TagEntry>>,
     entity_type_tags: FxHashMap<Identifier, Vec<EntityTypeTagEntry>>,
+    biome_tags: FxHashMap<Identifier, Vec<BiomeTagEntry>>,
     load_functions: Arc<[Identifier]>,
     tick_functions: Arc<[Identifier]>,
     loaded_packs: Arc<[String]>,
@@ -71,6 +73,7 @@ impl Default for DataPackManager {
             functions: FxHashMap::default(),
             tags: FxHashMap::default(),
             entity_type_tags: vanilla_entity_type_tags(),
+            biome_tags: vanilla_biome_tags(),
             load_functions: Arc::from([]),
             tick_functions: Arc::from([]),
             loaded_packs: Arc::from([]),
@@ -89,6 +92,12 @@ struct TagEntry {
 #[derive(Debug, Clone)]
 enum EntityTypeTagEntry {
     EntityType(u16),
+    Tag { id: Identifier, required: bool },
+}
+
+#[derive(Debug, Clone)]
+enum BiomeTagEntry {
+    Biome(u8),
     Tag { id: Identifier, required: bool },
 }
 
@@ -145,6 +154,30 @@ fn vanilla_entity_type_tags() -> FxHashMap<Identifier, Vec<EntityTypeTagEntry>> 
                 .iter()
                 .copied()
                 .map(EntityTypeTagEntry::EntityType)
+                .collect(),
+        );
+    }
+    tags
+}
+
+fn vanilla_biome_tags() -> FxHashMap<Identifier, Vec<BiomeTagEntry>> {
+    let mut tags = FxHashMap::default();
+    let Some(vanilla_tags) =
+        get_registry_key_tags(JavaMinecraftVersion::V_26_2, RegistryKey::WorldgenBiome)
+    else {
+        return tags;
+    };
+    for (raw_id, values) in vanilla_tags.entries() {
+        let Ok(id) = Identifier::parse(raw_id) else {
+            continue;
+        };
+        tags.insert(
+            id,
+            values
+                .1
+                .iter()
+                .filter_map(|id| u8::try_from(*id).ok())
+                .map(BiomeTagEntry::Biome)
                 .collect(),
         );
     }
@@ -212,6 +245,7 @@ impl DataPackManager {
             .resolve_tag(&Identifier::vanilla_static("tick"))
             .into();
         manager.validate_entity_type_tags();
+        manager.validate_biome_tags();
         manager
     }
 
@@ -261,6 +295,45 @@ impl DataPackManager {
                     && !self.entity_type_tags.contains_key(id)
                 {
                     warn!("Required entity type tag #{id} referenced by #{tag_id} does not exist");
+                }
+            }
+        }
+    }
+
+    /// Returns whether a biome belongs to a vanilla or data-pack-defined biome tag.
+    #[must_use]
+    pub fn biome_is_tagged(&self, tag: &Identifier, biome: &Biome) -> bool {
+        self.biome_tag_contains(tag, biome.id, &mut Vec::new())
+    }
+
+    fn biome_tag_contains(
+        &self,
+        tag: &Identifier,
+        biome_id: u8,
+        stack: &mut Vec<Identifier>,
+    ) -> bool {
+        if stack.contains(tag) {
+            return false;
+        }
+        let Some(entries) = self.biome_tags.get(tag) else {
+            return false;
+        };
+        stack.push(tag.clone());
+        let matches = entries.iter().any(|entry| match entry {
+            BiomeTagEntry::Biome(id) => *id == biome_id,
+            BiomeTagEntry::Tag { id, .. } => self.biome_tag_contains(id, biome_id, stack),
+        });
+        stack.pop();
+        matches
+    }
+
+    fn validate_biome_tags(&self) {
+        for (tag_id, entries) in &self.biome_tags {
+            for entry in entries {
+                if let BiomeTagEntry::Tag { id, required: true } = entry
+                    && !self.biome_tags.contains_key(id)
+                {
+                    warn!("Required biome tag #{id} referenced by #{tag_id} does not exist");
                 }
             }
         }
@@ -508,6 +581,8 @@ impl DataPackManager {
                 self.apply_function_tag(&pack.name, &tag_id, &file.contents);
             } else if let Some(tag_id) = entity_type_tag_id_from_path(&file.path) {
                 self.apply_entity_type_tag(&pack.name, &tag_id, &file.contents);
+            } else if let Some(tag_id) = biome_tag_id_from_path(&file.path) {
+                self.apply_biome_tag(&pack.name, &tag_id, &file.contents);
             }
         }
     }
@@ -582,6 +657,48 @@ impl DataPackManager {
                 Err(error) => warn!(
                     "Ignoring invalid identifier {raw_id:?} in entity type tag {tag_id}: {error}"
                 ),
+            }
+        }
+    }
+
+    fn apply_biome_tag(&mut self, pack_name: &str, tag_id: &Identifier, contents: &[u8]) {
+        let tag = match serde_json::from_slice::<TagFile>(contents) {
+            Ok(tag) => tag,
+            Err(error) => {
+                warn!("Ignoring invalid biome tag {tag_id} in data pack {pack_name}: {error}");
+                return;
+            }
+        };
+        let entries = self.biome_tags.entry(tag_id.clone()).or_default();
+        if tag.replace {
+            entries.clear();
+        }
+        for value in tag.values {
+            let (raw_id, required) = tag_value_parts(value);
+            if let Some(raw_tag_id) = raw_id.strip_prefix('#') {
+                match Identifier::parse(raw_tag_id) {
+                    Ok(id) => entries.push(BiomeTagEntry::Tag { id, required }),
+                    Err(error) => warn!(
+                        "Ignoring invalid tag identifier {raw_tag_id:?} in biome tag {tag_id}: {error}"
+                    ),
+                }
+                continue;
+            }
+            match Identifier::parse(&raw_id) {
+                Ok(id) if id.namespace() == "minecraft" => {
+                    if let Some(biome) = Biome::from_name(id.path()) {
+                        entries.push(BiomeTagEntry::Biome(biome.id));
+                    } else if required {
+                        warn!("Required biome {id} referenced by #{tag_id} does not exist");
+                    }
+                }
+                Ok(id) if required => {
+                    warn!("Required biome {id} referenced by #{tag_id} is not registered");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    warn!("Ignoring invalid identifier {raw_id:?} in biome tag {tag_id}: {error}");
+                }
             }
         }
     }
@@ -790,6 +907,8 @@ fn is_relevant_data_file(path: &str) -> bool {
             || (path.contains("/tags/function/")
                 && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
             || (path.contains("/tags/entity_type/")
+                && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
+            || (path.contains("/tags/worldgen/biome/")
                 && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json"))))
 }
 
@@ -803,6 +922,10 @@ fn function_tag_id_from_path(path: &str) -> Option<Identifier> {
 
 fn entity_type_tag_id_from_path(path: &str) -> Option<Identifier> {
     tag_id_from_path(path, "entity_type")
+}
+
+fn biome_tag_id_from_path(path: &str) -> Option<Identifier> {
+    tag_id_from_path(path, "worldgen/biome")
 }
 
 fn tag_id_from_path(path: &str, registry: &str) -> Option<Identifier> {
@@ -945,6 +1068,25 @@ mod tests {
 
         assert!(manager.entity_type_is_tagged(&undead, &EntityType::ZOMBIE));
         assert!(!manager.entity_type_is_tagged(&undead, &EntityType::COW));
+    }
+
+    #[test]
+    fn loads_data_pack_biome_tags() {
+        let temp = tempdir().unwrap();
+        let pack = temp.path().join("datapacks/test");
+        fs::create_dir_all(pack.join("data/minecraft/tags/worldgen/biome")).unwrap();
+        fs::write(pack.join("pack.mcmeta"), metadata()).unwrap();
+        fs::write(
+            pack.join("data/minecraft/tags/worldgen/biome/is_frozen.json"),
+            r#"{"values":["minecraft:frozen_river","minecraft:snowy_plains"]}"#,
+        )
+        .unwrap();
+
+        let manager = DataPackManager::load(temp.path());
+        let frozen = Identifier::parse_static("minecraft:is_frozen");
+
+        assert!(manager.biome_is_tagged(&frozen, &Biome::FROZEN_RIVER));
+        assert!(!manager.biome_is_tagged(&frozen, &Biome::PLAINS));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use super::stopwatch::{
     ERROR_DOES_NOT_EXIST as STOPWATCH_DOES_NOT_EXIST, StopwatchSuggestionProvider,
 };
 use crate::command::argument_builder::{ArgumentBuilder, argument, command, literal};
+use crate::command::argument_types::biome_predicate::BiomePredicateArgumentType;
 use crate::command::argument_types::block::BlockArgumentType;
 use crate::command::argument_types::coordinates::block_pos::BlockPosArgumentType;
 use crate::command::argument_types::coordinates::rotation::RotationArgumentType;
@@ -67,6 +68,8 @@ const STOPWATCH_RANGE: &str = "stopwatchRange";
 const ITEM_TARGETS: &str = "itemTargets";
 const ITEM_SLOTS: &str = "itemSlots";
 const ITEM_PREDICATE: &str = "itemPredicate";
+const BIOME_POS: &str = "biomePos";
+const BIOME_PREDICATE: &str = "biomePredicate";
 
 struct ExecuteRunExecutor;
 
@@ -669,6 +672,40 @@ fn items_condition(negated: bool) -> crate::command::argument_builder::LiteralAr
     )
 }
 
+fn execute_biome_condition_modifier<'a>(
+    context: &'a CommandContext,
+    negated: bool,
+) -> crate::command::node::RedirectModifierResult<'a> {
+    Box::pin(async move {
+        let pos = BlockPosArgumentType::get_block_pos(context, BIOME_POS)?;
+        let predicate = BiomePredicateArgumentType::get(context, BIOME_PREDICATE)?;
+        if predicate.test(
+            context.world().get_biome(&pos),
+            &context.server().data_pack_manager,
+        ) == negated
+        {
+            Ok(vec![])
+        } else {
+            Ok(vec![context.source.clone()])
+        }
+    })
+}
+
+fn biome_condition_redirect(negated: bool) -> RedirectModifier {
+    RedirectModifier::Custom(Arc::new(move |context| {
+        execute_biome_condition_modifier(context, negated)
+    }))
+}
+
+fn biome_condition(negated: bool) -> crate::command::argument_builder::LiteralArgumentBuilder {
+    literal("biome").then(
+        argument(BIOME_POS, BlockPosArgumentType).then(
+            argument(BIOME_PREDICATE, BiomePredicateArgumentType)
+                .redirect_with_modifier(Redirection::Root, biome_condition_redirect(negated)),
+        ),
+    )
+}
+
 struct StoreScoreCallback {
     world: Arc<World>,
     targets: Vec<String>,
@@ -1027,7 +1064,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                 )
                 .then(score_condition(false))
                 .then(stopwatch_condition(false))
-                .then(items_condition(false)),
+                .then(items_condition(false))
+                .then(biome_condition(false)),
         )
         .then(
             literal("unless")
@@ -1065,7 +1103,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                 )
                 .then(score_condition(true))
                 .then(stopwatch_condition(true))
-                .then(items_condition(true)),
+                .then(items_condition(true))
+                .then(biome_condition(true)),
         )
         .then(
             literal("store")
