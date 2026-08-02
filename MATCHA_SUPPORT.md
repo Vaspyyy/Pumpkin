@@ -1,0 +1,149 @@
+# Matcha support integration branch
+
+This branch is a long-lived integration branch for bringing Klei's Matcha
+Flavoured datapack to Pumpkin 26.2. It is deliberately not an upstream pull
+request: generic Pumpkin fixes must be extracted into focused branches and sent
+upstream separately.
+
+Current status: **engineering base only**. The scoreboard and command-chain
+prerequisites are integrated and tested, but Pumpkin cannot discover or run the
+datapack yet.
+
+## Inputs audited
+
+The baseline below was measured on 2026-08-02 from:
+
+- `Matcha_Flavoured_1_03.zip`: combined datapack and resource pack for 26.2.
+- `matcha-vanilla-flavoured-1-03.zip`: client resource-pack-only variant. Its
+  `pack.mcmeta` currently describes itself as `1.01 for 26.2` despite the 1.03
+  filename.
+
+The archives are not committed or redistributed by this branch.
+
+The combined pack contains:
+
+- 5,196 entries: 2,418 under `data/` and 2,775 under `assets/`.
+- 95 functions and 2,095 datapack JSON files.
+- `minecraft:load` and `minecraft:tick` function tags.
+- 309 top-level `execute` commands, 43 `scoreboard` commands, 20 `function`
+  commands, 11 `schedule` commands, and 7 `stopwatch` commands.
+- JSON-heavy content including 1,060 recipes, 282 loot tables, 235 villager
+  trades, 223 advancements, 75 world-generation entries, 24 enchantments, 68
+  trade sets, and custom timeline, dimension, instrument, and jukebox data.
+
+All 2,095 datapack JSON files parse as valid JSON.
+
+## Integrated prerequisites
+
+| Area | Integration commit | Upstream work | Status here |
+| --- | --- | --- | --- |
+| Scoreboard commands, criteria, persistence, display slots, render types, automatic criteria, and WIT API | `31d1cad4` | [Pumpkin #2658](https://github.com/Pumpkin-MC/Pumpkin/pull/2658) | Integrated on current upstream |
+| Execute modifier chaining | `9750ac25` | [Pumpkin #2609](https://github.com/Pumpkin-MC/Pumpkin/pull/2609) | Integrated on current upstream |
+| False/empty modifier result propagation | `7427a928` | Follow-up branch `agent/command-chain-pr-ready` | Integrated on current upstream |
+| Scoreboard WIT definitions | `ca0eef91732dd6416d7454eee36c034d3c5bbc73` | [pumpkin-plugin-wit #25](https://github.com/Pumpkin-MC/pumpkin-plugin-wit/pull/25) | Mirrored and pinned |
+
+The submodule URL intentionally points to
+[`Vaspyyy/pumpkin-plugin-wit`](https://github.com/Vaspyyy/pumpkin-plugin-wit),
+branch `matcha-scoreboard-api`. The gitlink pins the exact commit, so a clone of
+this branch does not depend on the contributor fork remaining available.
+
+## Compatibility baseline
+
+| Matcha dependency | Measured use | Pumpkin status on this branch | Next action |
+| --- | ---: | --- | --- |
+| Pack discovery, `pack.mcmeta`, reload, and resource registry | Whole pack | Missing. `level.dat` records enabled pack names, but the server has no runtime datapack loader. | Implement pack discovery and a reloadable resource manager first. |
+| Function loading and `minecraft:load` / `minecraft:tick` | 95 functions; both standard tags | Missing. There is no `/function` command or function scheduler. | Add function parsing/execution, then wire load and tick tags. |
+| Scoreboards | 43 direct commands; 38 score conditions; 7 score result stores | Covered by the integrated scoreboard and command-chain work. | Re-run the existing in-game scoreboard suite once functions can execute. |
+| `/schedule function` | 11 calls | Missing. | Add a persistent function scheduler after the function runtime exists. |
+| `/stopwatch` and `execute if/unless stopwatch` | 7 creates; 41 conditions | Missing. | Implement the 26.2 stopwatch command and execute condition. |
+| `execute if items` | 47 conditions | Missing. | Add item-stack predicate matching and the execute condition. |
+| `execute if predicate` | 7 conditions | Missing. Loot predicates are not loaded. | Load predicates and expose them to execute and selectors. |
+| `execute if biome` | 1 condition | Missing. | Add biome lookup condition. |
+| `execute on vehicle` | 10 modifiers | Missing. | Add the relation modifier after function execution works. |
+| `execute store result entity` | 3 stores | Missing. Only score result/success storage is implemented. | Add NBT-backed entity storage. |
+| Entity selector type tags such as `type=#minecraft:undead` | 67 selector occurrences | Missing. `@n`, scores, tags, and NBT selectors exist, but `type=#tag` is rejected. | Resolve entity type tags through the datapack tag registry. |
+| Recipes, loot tables, advancements, enchantments, trades, and worldgen | 2,095 JSON files total | Pumpkin currently uses generated/static vanilla data rather than resources from an enabled pack. | Add registries incrementally; recipes and advancements are good early vertical slices. |
+| Client assets | 2,775 files in the combined pack; separate resource-only zip available | Pumpkin can advertise a Java resource-pack URL, but it does not serve this local archive automatically. | Host the resource-only zip and configure its URL/SHA-1 when gameplay support is ready. |
+
+This means scoreboard support is necessary, but it is no longer the critical
+path. The shortest path to a visible Matcha milestone is:
+
+1. discover and validate the pack;
+2. load and run functions plus the load/tick tags;
+3. add `/schedule` and the missing execute conditions used by Matcha;
+4. load tags and predicates;
+5. make one data-driven content family work end-to-end, then expand registry
+   coverage.
+
+## Definition of the first playable milestone
+
+The first milestone is not “all 2,095 JSON files work.” It is a small, testable
+vertical slice:
+
+1. Pumpkin discovers the pack in a world's `datapacks/` directory.
+2. The pack passes its 26.2 format check.
+3. `main:setup/load` runs through `minecraft:load` and sends Matcha's loaded
+   message.
+4. `main:setup/tick` runs every tick without an unknown-command or dispatcher
+   routing error.
+5. Matcha's scoreboard setup persists through a restart.
+6. One mechanic that uses a scheduled function works end-to-end.
+
+Only after this is green should the branch claim that Matcha is playable.
+
+## Weekly upstream maintenance
+
+Normal weekly updates use merges because `matcha-support` is a published
+integration branch. Rebasing it every week would rewrite the commit IDs that
+testers and builds may already use.
+
+```bash
+git fetch origin
+git switch matcha-support
+git merge origin/master
+git submodule sync --recursive
+git submodule update --init --recursive
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo nextest run --workspace --all-features
+cargo test --doc --workspace --all-features
+cargo build --release
+git push fork matcha-support
+```
+
+Before merging, inspect the upstream range and the local patch delta:
+
+```bash
+git log --oneline HEAD..origin/master
+git diff --stat origin/master...HEAD
+git submodule status
+```
+
+When upstream merges one of the prerequisite patches, do not keep a duplicate
+copy indefinitely. Build a replacement integration tip from current
+`origin/master`, carry forward only the still-unmerged Matcha commits, run the
+full checks, and update the published branch with `--force-with-lease`. Announce
+that exceptional history rewrite before anyone updates a test server.
+
+## Upstream contribution policy
+
+- Do not open an upstream PR from `matcha-support`.
+- Start each generic contribution from current `origin/master`.
+- Keep scoreboard, dispatcher, datapack loading, commands, and individual data
+  registries in separate PRs unless a dependency makes separation impossible.
+- Include focused tests and a Matcha-derived reproduction without committing
+  the Matcha archives.
+- Reconcile the integration branch only after the upstream PR is merged or its
+  final patch is stable.
+
+## Clone and build
+
+```bash
+git clone --recurse-submodules --branch matcha-support \
+  https://github.com/Vaspyyy/Pumpkin.git Pumpkin-matcha-support
+cd Pumpkin-matcha-support
+cargo build --release
+```
+
+At the current stage this builds the integration server; it does not yet make
+the Matcha datapack loadable.
