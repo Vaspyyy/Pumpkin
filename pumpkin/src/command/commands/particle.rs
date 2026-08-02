@@ -1,4 +1,3 @@
-use crate::block::entities::BlockEntity;
 use crate::command::{
     CommandError, CommandExecutor, CommandResult, CommandSender,
     args::{
@@ -7,7 +6,6 @@ use crate::command::{
     },
     tree::{CommandTree, builder::argument},
 };
-use crate::entity::EntityBase;
 use pumpkin_util::{math::vector3::Vector3, text::TextComponent};
 const NAMES: [&str; 1] = ["particle"];
 
@@ -40,35 +38,17 @@ impl CommandExecutor for Executor {
             let delta: Vector3<f32> = Vector3::new(delta.x as f32, delta.y as f32, delta.z as f32);
             let speed = speed.unwrap_or(Ok(0.0))?;
             let count = count.unwrap_or(Ok(0))?;
-            let (world, pos) = match sender {
-                CommandSender::Console | CommandSender::Rcon(_) | CommandSender::Dummy => {
-                    let guard = server.worlds.load();
-                    let world = guard
-                        .first()
-                        .cloned()
-                        .ok_or(CommandError::InvalidRequirement)?;
-                    // default position for spawning a player, in this case for particle
-                    let pos = {
-                        let info = &world.level_info.load();
-                        // default position for spawning a player, in this case for mob
-                        pos.unwrap_or(Vector3::new(
-                            f64::from(info.spawn_x) + 0.5,
-                            f64::from(info.spawn_y) + 1.0,
-                            f64::from(info.spawn_z) + 0.5,
-                        ))
-                    };
-
-                    (world, pos)
-                }
-                CommandSender::Player(player) => {
-                    let pos = pos.unwrap_or(player.get_entity().pos.load());
-
-                    (player.world(), pos)
-                }
-                CommandSender::CommandBlock(c, w) => {
-                    (w.clone(), c.get_position().to_centered_f64())
-                }
-            };
+            let world = sender
+                .world_or_first(server)
+                .ok_or(CommandError::InvalidRequirement)?;
+            let pos = pos.ok().or_else(|| sender.position()).unwrap_or_else(|| {
+                let info = world.level_info.load();
+                Vector3::new(
+                    f64::from(info.spawn_x) + 0.5,
+                    f64::from(info.spawn_y) + 1.0,
+                    f64::from(info.spawn_z) + 0.5,
+                )
+            });
 
             world.spawn_particle(pos, delta, speed, count, *particle);
 

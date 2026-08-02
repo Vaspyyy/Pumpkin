@@ -1075,7 +1075,9 @@ impl Server {
     ) -> Vec<Arc<Player>> {
         let mut players = match &target_selector.selector_type {
             EntitySelectorType::Source => source
-                .and_then(CommandSender::as_player)
+                .and_then(CommandSender::source_entity)
+                .and_then(|entity| entity.get_player().map(|player| player.gameprofile.id))
+                .and_then(|uuid| self.get_player_by_uuid(uuid))
                 .map_or_else(Vec::new, |player| vec![player]),
             EntitySelectorType::NearestPlayer
             | EntitySelectorType::NearestEntity
@@ -1186,8 +1188,8 @@ impl Server {
 
         let mut entities = match &target_selector.selector_type {
             EntitySelectorType::Source => source
-                .and_then(CommandSender::as_player)
-                .map_or_else(Vec::new, |player| vec![player as Arc<dyn EntityBase>]),
+                .and_then(CommandSender::source_entity)
+                .map_or_else(Vec::new, |entity| vec![entity]),
             EntitySelectorType::NearestPlayer
             | EntitySelectorType::RandomPlayer
             | EntitySelectorType::AllPlayers => all_players_as_entities(),

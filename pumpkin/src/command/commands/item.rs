@@ -43,17 +43,9 @@ impl CommandExecutor for BlockReplaceExecutor {
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
-            let world = match sender {
-                CommandSender::Console | CommandSender::Rcon(_) | CommandSender::Dummy => {
-                    let guard = server.worlds.load();
-                    guard
-                        .first()
-                        .cloned()
-                        .ok_or(CommandError::InvalidRequirement)?
-                }
-                CommandSender::Player(player) => player.world().clone(),
-                CommandSender::CommandBlock(_, w) => w.clone(),
-            };
+            let world = sender
+                .world_or_first(server)
+                .ok_or(CommandError::InvalidRequirement)?;
 
             let pos = BlockPosArgumentConsumer::find_loaded_arg(args, ARG_POS, &world)?;
             let (slot, slot_name) = SlotArgumentConsumer::find_arg(args, ARG_SLOT)?;

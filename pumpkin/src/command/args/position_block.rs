@@ -96,7 +96,7 @@ impl MaybeRelativeBlockPos {
     }
 }
 
-fn parse_local_coordinate(s: &str) -> Option<f64> {
+pub(super) fn parse_local_coordinate(s: &str) -> Option<f64> {
     let value = s.strip_prefix('^')?;
     if value.is_empty() {
         Some(0.0)
@@ -105,7 +105,10 @@ fn parse_local_coordinate(s: &str) -> Option<f64> {
     }
 }
 
-fn apply_local_coordinates(rotation: (f32, f32), direction: Vector3<f64>) -> Vector3<f64> {
+pub(super) fn apply_local_coordinates(
+    rotation: (f32, f32),
+    direction: Vector3<f64>,
+) -> Vector3<f64> {
     let (yaw, pitch) = rotation;
     let yaw = f64::from(yaw);
     let pitch = f64::from(pitch);

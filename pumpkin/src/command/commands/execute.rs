@@ -24,9 +24,9 @@ use crate::command::argument_types::score_holder::ScoreHolderArgumentType;
 use crate::command::argument_types::slot::SlotsArgumentType;
 use crate::command::context::command_context::CommandContext;
 use crate::command::context::command_source::{ResultValueTaker, ReturnValue, ReturnValueCallable};
-use crate::command::errors::error_types::CommandErrorType;
+use crate::command::errors::error_types::{CommandErrorType, DISPATCHER_PARSE_EXCEPTION};
 use crate::command::node::attached::{CommandNodeId, NodeId};
-use crate::command::node::dispatcher::CommandDispatcher;
+use crate::command::node::dispatcher::{CommandDispatcher, UnifiedCommandError};
 use crate::command::node::tree::Tree;
 use crate::command::node::{CommandExecutor, CommandExecutorResult, RedirectModifier, Redirection};
 use crate::entity::EntityBase;
@@ -83,10 +83,26 @@ impl CommandExecutor for ExecuteRunExecutor {
         Box::pin(async move {
             let command_str = StringArgumentType::get(context, "command")?;
             let dispatcher = context.server().command_dispatcher.read().await;
-            let result = dispatcher
-                .execute_input(command_str, &context.source)
-                .await?;
-            Ok(result)
+            match dispatcher
+                .execute_input_with_fallback(command_str, &context.source)
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(
+                    UnifiedCommandError::Modern(error)
+                    | UnifiedCommandError::Legacy(
+                        crate::command::dispatcher::CommandError::SyntaxError(error),
+                    ),
+                ) => Err(error),
+                Err(UnifiedCommandError::Legacy(error)) => {
+                    let message = error
+                        .into_messages(command_str)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| TextComponent::text("Legacy command failed"));
+                    Err(DISPATCHER_PARSE_EXCEPTION.create_without_context(message))
+                }
+            }
         })
     }
 }
@@ -120,7 +136,7 @@ fn execute_at_modifier<'a>(
             let entity = target.get_entity();
             let mut source = context.source.as_ref().clone();
             source.position = entity.pos.load();
-            source.rotation = Vector2::new(entity.yaw.load(), entity.pitch.load());
+            source.rotation = Vector2::new(entity.pitch.load(), entity.yaw.load());
             source.world = Some(entity.world.load().clone());
             sources.push(Arc::new(source));
         }
@@ -226,7 +242,7 @@ fn execute_rotated_as_modifier<'a>(
         for target in targets {
             let entity = target.get_entity();
             let mut source = context.source.as_ref().clone();
-            source.rotation = Vector2::new(entity.yaw.load(), entity.pitch.load());
+            source.rotation = Vector2::new(entity.pitch.load(), entity.yaw.load());
             sources.push(Arc::new(source));
         }
         Ok(sources)
@@ -310,7 +326,7 @@ fn execute_facing_modifier<'a>(
         let yaw = (dz.atan2(dx).to_degrees() as f32) - 90.0;
         let pitch = -(dy.atan2(xz_dist).to_degrees() as f32);
 
-        source.rotation = Vector2::new(yaw, pitch);
+        source.rotation = Vector2::new(pitch, yaw);
         Ok(vec![Arc::new(source)])
     })
 }
@@ -335,7 +351,7 @@ fn execute_facing_entity_modifier<'a>(
             let yaw = (dz.atan2(dx).to_degrees() as f32) - 90.0;
             let pitch = -(dy.atan2(xz_dist).to_degrees() as f32);
 
-            source.rotation = Vector2::new(yaw, pitch);
+            source.rotation = Vector2::new(pitch, yaw);
             sources.push(Arc::new(source));
         }
         Ok(sources)

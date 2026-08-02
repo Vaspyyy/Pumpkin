@@ -1,4 +1,5 @@
 use std::fmt;
+use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -45,6 +46,21 @@ pub mod tree;
 /// Set from [`CommandsConfig::broadcast_console_to_ops`] during server startup.
 /// Defaults to `true` for vanilla compatibility.
 static BROADCAST_CONSOLE_TO_OPS: AtomicBool = AtomicBool::new(true);
+
+tokio::task_local! {
+    /// The modern command source currently being exposed to a legacy command.
+    ///
+    /// This keeps source changes made by `execute` available while the legacy
+    /// dispatcher is still being phased out.
+    static LEGACY_COMMAND_SOURCE: CommandSource;
+}
+
+pub(crate) async fn with_legacy_command_source<T>(
+    source: &CommandSource,
+    future: impl Future<Output = T>,
+) -> T {
+    LEGACY_COMMAND_SOURCE.scope(source.clone(), future).await
+}
 
 /// Initializes the console broadcast setting from server configuration.
 ///
@@ -147,6 +163,20 @@ impl CommandSender {
         }
     }
 
+    /// Returns the entity represented by this command sender, including a
+    /// modern source temporarily bridged into the legacy dispatcher.
+    #[must_use]
+    pub(crate) fn source_entity(&self) -> Option<Arc<dyn EntityBase>> {
+        if let Ok(entity) = LEGACY_COMMAND_SOURCE.try_with(|source| source.entity.clone()) {
+            return entity;
+        }
+
+        match self {
+            Self::Player(player) => Some(player.clone()),
+            _ => None,
+        }
+    }
+
     /// prefer using `has_permission_lvl(lvl)`
     #[must_use]
     pub fn permission_lvl(&self) -> PermissionLvl {
@@ -187,6 +217,10 @@ impl CommandSender {
 
     #[must_use]
     pub fn position(&self) -> Option<Vector3<f64>> {
+        if let Ok(position) = LEGACY_COMMAND_SOURCE.try_with(|source| source.position) {
+            return Some(position);
+        }
+
         match self {
             Self::Console | Self::Rcon(..) | Self::Dummy => None,
             Self::Player(p) => Some(p.living_entity.entity.pos.load()),
@@ -196,6 +230,12 @@ impl CommandSender {
 
     #[must_use]
     pub fn rotation(&self) -> Option<(f32, f32)> {
+        if let Ok(rotation) =
+            LEGACY_COMMAND_SOURCE.try_with(|source| (source.rotation.y, source.rotation.x))
+        {
+            return Some(rotation);
+        }
+
         match self {
             Self::Console | Self::Rcon(..) | Self::Dummy => None,
             Self::Player(player) => Some(player.rotation()),
@@ -222,6 +262,10 @@ impl CommandSender {
 
     #[must_use]
     pub fn world(&self) -> Option<Arc<World>> {
+        if let Ok(world) = LEGACY_COMMAND_SOURCE.try_with(|source| source.world.clone()) {
+            return world;
+        }
+
         match self {
             // These senders are not bound to a world. Use `world_or_first` to
             // fall back to the first world instead.
@@ -321,16 +365,19 @@ impl CommandSender {
                     server.clone(),
                 )
             }
-            Self::Player(player) => CommandSource::new(
-                Self::Player(player.clone()),
-                player.world(),
-                Some(player.clone()),
-                player.position(),
-                player.rotation().into(),
-                player.get_display_name().await.get_text(),
-                player.get_display_name().await,
-                server.clone(),
-            ),
+            Self::Player(player) => {
+                let (yaw, pitch) = player.rotation();
+                CommandSource::new(
+                    Self::Player(player.clone()),
+                    player.world(),
+                    Some(player.clone()),
+                    player.position(),
+                    Vector2::new(pitch, yaw),
+                    player.get_display_name().await.get_text(),
+                    player.get_display_name().await,
+                    server.clone(),
+                )
+            }
             Self::CommandBlock(command_entity, world) => {
                 let pos = command_entity.position;
 

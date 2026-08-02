@@ -226,10 +226,15 @@ impl CommandDispatcher {
         match self.execute_input(input, source).await {
             Ok(result) => Ok(result),
             Err(error) if error.is(&DISPATCHER_UNKNOWN_COMMAND) => {
-                let result = self
-                    .fallback_dispatcher
-                    .dispatch(&source.output, source.server().as_ref(), input)
-                    .await;
+                let result = crate::command::with_legacy_command_source(
+                    source,
+                    self.fallback_dispatcher.dispatch(
+                        &source.output,
+                        source.server().as_ref(),
+                        input,
+                    ),
+                )
+                .await;
                 source.output.set_success_count(u32::from(result.is_ok()));
                 result.map(|()| 1).map_err(UnifiedCommandError::Legacy)
             }

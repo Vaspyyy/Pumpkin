@@ -1,4 +1,3 @@
-use crate::entity::EntityBase;
 use crate::{
     command::{
         CommandError, CommandExecutor, CommandResult, CommandSender,
@@ -13,8 +12,6 @@ use crate::{
 use pumpkin_data::translation;
 use pumpkin_util::{math::vector3::Vector3, text::TextComponent};
 use uuid::Uuid;
-
-use crate::block::entities::BlockEntity;
 
 const NAMES: [&str; 1] = ["summon"];
 
@@ -36,35 +33,17 @@ impl CommandExecutor for Executor {
         Box::pin(async move {
             let entity_type = SummonableEntitiesArgumentConsumer::find_arg(args, ARG_ENTITY)?;
             let pos = Position3DArgumentConsumer::find_arg(args, ARG_POS);
-            let (world, pos) = match sender {
-                CommandSender::Console | CommandSender::Rcon(_) | CommandSender::Dummy => {
-                    let guard = server.worlds.load();
-                    let world = guard
-                        .first()
-                        .cloned()
-                        .ok_or(CommandError::InvalidRequirement)?;
-                    let pos = {
-                        let info = &world.level_info.load();
-                        // default position for spawning a player, in this case for mob
-                        pos.unwrap_or(Vector3::new(
-                            f64::from(info.spawn_x) + 0.5,
-                            f64::from(info.spawn_y) + 1.0,
-                            f64::from(info.spawn_z) + 0.5,
-                        ))
-                    };
-
-                    (world, pos)
-                }
-                CommandSender::Player(player) => {
-                    let pos = pos.unwrap_or(player.get_entity().pos.load());
-
-                    (player.world(), pos)
-                }
-                CommandSender::CommandBlock(c, w) => {
-                    let pos = pos.unwrap_or(c.get_position().to_centered_f64());
-                    (w.clone(), pos)
-                }
-            };
+            let world = sender
+                .world_or_first(server)
+                .ok_or(CommandError::InvalidRequirement)?;
+            let pos = pos.ok().or_else(|| sender.position()).unwrap_or_else(|| {
+                let info = world.level_info.load();
+                Vector3::new(
+                    f64::from(info.spawn_x) + 0.5,
+                    f64::from(info.spawn_y) + 1.0,
+                    f64::from(info.spawn_z) + 0.5,
+                )
+            });
             let entity = from_type(entity_type, pos, &world, Uuid::new_v4());
             let name = entity.get_display_name().await;
             world.spawn_entity(entity).await;
