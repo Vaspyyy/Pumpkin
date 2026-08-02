@@ -31,6 +31,8 @@ struct FunctionExecutionState {
 pub enum FunctionExecutionError {
     #[error("function {0} does not exist")]
     UnknownFunction(Identifier),
+    #[error("function tag {0} does not exist")]
+    UnknownTag(Identifier),
     #[error("function recursion exceeded the maximum depth of {MAX_FUNCTION_DEPTH}")]
     RecursionLimit,
     #[error("function command chain exceeded max_command_sequence_length ({0})")]
@@ -187,6 +189,15 @@ impl DataPackManager {
     }
 
     #[must_use]
+    pub fn has_tag(&self, id: &Identifier) -> bool {
+        self.tags.contains_key(id)
+    }
+
+    pub fn tag_ids(&self) -> impl Iterator<Item = &Identifier> {
+        self.tags.keys()
+    }
+
+    #[must_use]
     pub fn load_functions(&self) -> &[Identifier] {
         &self.load_functions
     }
@@ -243,6 +254,48 @@ impl DataPackManager {
                         max_commands,
                     },
                     self.execute_function_inner(server, id, source),
+                )
+                .await
+        }
+    }
+
+    pub async fn execute_tag(
+        &self,
+        server: &Arc<Server>,
+        id: &Identifier,
+        source: &CommandSource,
+    ) -> Result<i32, FunctionExecutionError> {
+        if !self.tags.contains_key(id) {
+            return Err(FunctionExecutionError::UnknownTag(id.clone()));
+        }
+        let functions = self.resolve_tag(id);
+        let execute = async {
+            let mut successful_commands = 0;
+            for function in &functions {
+                successful_commands += self
+                    .execute_function_inner(server, function, source)
+                    .await?;
+            }
+            Ok(successful_commands)
+        };
+
+        if FUNCTION_EXECUTION_STATE.try_with(|_| ()).is_ok() {
+            execute.await
+        } else {
+            let max_commands = server
+                .level_info
+                .load()
+                .game_rules
+                .max_command_sequence_length
+                .max(0);
+            FUNCTION_EXECUTION_STATE
+                .scope(
+                    FunctionExecutionState {
+                        commands: Cell::new(0),
+                        depth: Cell::new(0),
+                        max_commands,
+                    },
+                    execute,
                 )
                 .await
         }

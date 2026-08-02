@@ -11,6 +11,7 @@ use crate::net::{ClientPlatform, DisconnectReason, EncryptionError, GameProfile,
 use crate::plugin::PluginManager;
 use crate::plugin::player::player_login::PlayerLoginEvent;
 use crate::plugin::server::server_broadcast::ServerBroadcastEvent;
+use crate::server::function_scheduler::FunctionScheduler;
 use crate::server::tick_rate_manager::ServerTickRateManager;
 use crate::world::WorldPortal;
 use crate::world::custom_bossbar::CustomBossbars;
@@ -55,6 +56,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::task::TaskTracker;
 
 mod connection_cache;
+pub mod function_scheduler;
 mod key_store;
 pub mod recipe;
 pub mod scheduler;
@@ -142,6 +144,8 @@ pub struct Server {
     pub player_idle_timeout: AtomicI32,
     /// Manages scheduled tasks (e.g. from plugins)
     pub task_scheduler: Arc<TaskScheduler>,
+    /// Manages persistent vanilla `/schedule function` events.
+    pub function_scheduler: Arc<FunctionScheduler>,
     tasks: TaskTracker,
     runtime: tokio::runtime::Handle,
 
@@ -274,6 +278,10 @@ impl Server {
         let data_pack_manager = data_pack_loader
             .await
             .expect("Data pack loading task panicked");
+        let function_scheduler = Arc::new(FunctionScheduler::new(
+            &level_info.load().scheduled_events,
+            level_info.load().game_time,
+        ));
 
         let server = Self {
             basic_config,
@@ -311,6 +319,7 @@ impl Server {
             tasks: TaskTracker::new(),
             runtime: tokio::runtime::Handle::current(),
             task_scheduler: Arc::new(TaskScheduler::new()),
+            function_scheduler,
             server_guid: rand::random(),
             player_idle_timeout: AtomicI32::new(0),
             mojang_public_keys: ArcSwap::from_pointee(Vec::new()),
@@ -636,6 +645,19 @@ impl Server {
         };
         let mut level_data = self.level_info.load().as_ref().clone();
         level_data.scoreboard_data = sb_data;
+        level_data.game_time = self.function_scheduler.current_time();
+        if let Some(overworld) = self
+            .worlds
+            .load()
+            .iter()
+            .find(|world| world.dimension.minecraft_name == Dimension::OVERWORLD.minecraft_name)
+        {
+            level_data.day_time = overworld.level_time.lock().await.time_of_day;
+        }
+        level_data.scheduled_events = self
+            .function_scheduler
+            .snapshot(level_data.data_version)
+            .await;
         self.level_info.store(Arc::new(level_data));
 
         let level_data = self.level_info.load();
@@ -948,6 +970,7 @@ impl Server {
     /// Ticks the game logic for all worlds. This is the part that is affected by `/tick freeze`.
     pub async fn tick_worlds(self: &Arc<Self>) {
         self.task_scheduler.tick(self).await;
+        self.function_scheduler.tick(self).await;
         self.data_pack_manager.run_tick_functions(self).await;
 
         let mut set = JoinSet::new();

@@ -290,6 +290,9 @@ impl World {
     ) -> Self {
         // TODO
         let generation_settings = GenerationSettings::from_dimension(&dimension);
+        let saved_time = level_info.load();
+        let level_time = LevelTime::from_saved_times(saved_time.game_time, saved_time.day_time);
+        drop(saved_time);
 
         // Load portal POI from disk (PoiStorage::new automatically loads from disk if files exist)
         let portal_poi = portal::PortalPoiStorage::new(level.level_folder.poi_folder.clone());
@@ -304,7 +307,7 @@ impl World {
             entities: ArcSwap::new(Arc::new(Vec::new())),
             scoreboard,
             worldborder: Mutex::new(Worldborder::new(0.0, 0.0, 5.999_996_8E7, 0, 5, 300)),
-            level_time: Mutex::new(LevelTime::new()),
+            level_time: Mutex::new(level_time),
             dimension,
             weather: Mutex::new(Weather::new()),
             block_registry,

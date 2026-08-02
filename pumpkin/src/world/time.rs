@@ -24,6 +24,15 @@ impl LevelTime {
         }
     }
 
+    #[must_use]
+    pub const fn from_saved_times(world_age: i64, time_of_day: i64) -> Self {
+        Self {
+            world_age,
+            time_of_day,
+            rain_time: 0,
+        }
+    }
+
     pub const fn tick_time(&mut self, advance_time: bool, advance_weather: bool) {
         self.world_age += 1;
         if advance_weather {

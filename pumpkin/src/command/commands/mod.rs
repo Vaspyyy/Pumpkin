@@ -56,6 +56,7 @@ mod saveall;
 mod saveoff;
 mod saveon;
 mod say;
+mod schedule;
 mod scoreboard;
 mod seed;
 mod setblock;
@@ -181,6 +182,7 @@ pub async fn default_dispatcher(
     function::register(&mut dispatcher, registry);
     ride::register(&mut dispatcher, registry);
     recipe::register(&mut dispatcher, registry);
+    schedule::register(&mut dispatcher, registry);
     help::register(&mut dispatcher, registry);
     kill::register(&mut dispatcher, registry);
     op::register(&mut dispatcher, registry);

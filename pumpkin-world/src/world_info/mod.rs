@@ -58,6 +58,8 @@ pub struct LevelData {
     pub difficulty_locked: bool,
     #[serde(default)]
     pub last_played: i64,
+    #[serde(rename = "Time", default)]
+    pub game_time: i64,
     #[serde(default = "default_level_name")]
     pub level_name: String,
     #[serde(default)]
@@ -100,6 +102,10 @@ pub struct LevelData {
     /// Scoreboard data persisted to `data/minecraft/scoreboard.dat`.
     #[serde(skip_serializing, default)]
     pub scoreboard_data: data_files::ScoreboardData,
+
+    /// Scheduled data pack functions persisted to `data/minecraft/scheduled_events.dat`.
+    #[serde(skip_serializing, default)]
+    pub scheduled_events: data_files::ScheduledEventsData,
 }
 
 const DEFAULT_BORDER_DAMAGE_PER_BLOCK: f64 = 0.2;
@@ -343,6 +349,7 @@ impl LevelData {
             difficulty: DEFAULT_DIFFICULTY,
             difficulty_locked: false,
             last_played: -1,
+            game_time: 0,
             level_name: DEFAULT_LEVEL_NAME.to_string(),
             spawn_x: 0,
             spawn_y: DEFAULT_SPAWN_Y,
@@ -358,6 +365,7 @@ impl LevelData {
             day_time: 0,
             clear_weather_time: -1,
             scoreboard_data: data_files::ScoreboardData::default(),
+            scheduled_events: data_files::ScheduledEventsData::default(),
         }
     }
 

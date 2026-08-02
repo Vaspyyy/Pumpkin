@@ -90,6 +90,28 @@ pub struct WorldClocksData {
     pub data_version: i32,
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+pub struct ScheduledEventsData {
+    #[serde(default)]
+    pub events: Vec<ScheduledEventData>,
+    #[serde(rename = "DataVersion", default)]
+    pub data_version: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct ScheduledEventData {
+    pub trigger_time: i64,
+    pub id: String,
+    pub callback: ScheduledEventCallbackData,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct ScheduledEventCallbackData {
+    #[serde(rename = "type")]
+    pub callback_type: String,
+    pub id: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct WanderingTraderData {
     #[serde(rename = "spawn_delay", default = "default_wandering_trader_delay")]
@@ -395,26 +417,37 @@ pub fn write_custom_boss_events_stub(
         .map_err(|e| WorldInfoError::SerializationError(e.to_string()))
 }
 
-pub fn write_scheduled_events_stub(
+pub fn read_scheduled_events(level_folder: &Path) -> ScheduledEventsData {
+    let path = minecraft_data_dir(level_folder).join("scheduled_events.dat");
+    if !path.exists() {
+        return ScheduledEventsData::default();
+    }
+
+    match File::open(&path) {
+        Ok(file) => match from_gzip_bytes::<DataFileRoot<ScheduledEventsData>, _>(file) {
+            Ok(root) => root.data,
+            Err(error) => {
+                warn!("Failed to deserialize scheduled_events.dat, using defaults: {error}");
+                ScheduledEventsData::default()
+            }
+        },
+        Err(error) => {
+            warn!("Failed to open scheduled_events.dat, using defaults: {error}");
+            ScheduledEventsData::default()
+        }
+    }
+}
+
+pub fn write_scheduled_events(
     level_folder: &Path,
-    data_version: i32,
+    data: &ScheduledEventsData,
 ) -> Result<(), WorldInfoError> {
     let dir = ensure_minecraft_data_dir(level_folder)?;
     let path = dir.join("scheduled_events.dat");
-    if path.exists() {
-        return Ok(());
-    }
-
-    let mut inner = NbtCompound::new();
-    inner.put("events", NbtTag::List(vec![]));
-    inner.put_int("DataVersion", data_version);
-    let mut root = NbtCompound::new();
-    root.put_compound("data", inner);
-
     let file = File::create(&path)?;
-
-    pumpkin_nbt::nbt_compress::write_gzip_compound_tag(root, file)
-        .map_err(|e| WorldInfoError::SerializationError(e.to_string()))
+    let root = DataFileRoot { data: data.clone() };
+    to_gzip_bytes(&root, BufWriter::new(file))
+        .map_err(|error| WorldInfoError::SerializationError(error.to_string()))
 }
 
 /// Serializable scoreboard data for `data/minecraft/scoreboard.dat`.
@@ -674,5 +707,44 @@ mod scoreboard_tests {
         assert_eq!(score.get_byte("Locked"), Some(1));
 
         assert_eq!(read_scoreboard(temporary_directory.path()), data);
+    }
+}
+
+#[cfg(test)]
+mod scheduled_events_tests {
+    use super::*;
+
+    #[test]
+    fn scheduled_events_use_vanilla_callback_shape_and_round_trip() {
+        let temporary_directory = tempfile::tempdir().expect("temporary directory");
+        let data = ScheduledEventsData {
+            events: vec![ScheduledEventData {
+                trigger_time: 1234,
+                id: "example:later".to_string(),
+                callback: ScheduledEventCallbackData {
+                    callback_type: "minecraft:function".to_string(),
+                    id: "example:later".to_string(),
+                },
+            }],
+            data_version: 4903,
+        };
+
+        write_scheduled_events(temporary_directory.path(), &data).expect("write scheduled events");
+        assert_eq!(read_scheduled_events(temporary_directory.path()), data);
+
+        let path = minecraft_data_dir(temporary_directory.path()).join("scheduled_events.dat");
+        let root = read_gzip_compound_tag(File::open(path).expect("open scheduled events"))
+            .expect("read scheduled events NBT");
+        let inner = root.get_compound("data").expect("data compound");
+        assert_eq!(inner.get_int("DataVersion"), Some(4903));
+        let events = inner.get_list("events").expect("events list");
+        let NbtTag::Compound(event) = &events[0] else {
+            panic!("event should be a compound");
+        };
+        assert_eq!(event.get_long("trigger_time"), Some(1234));
+        assert_eq!(event.get_string("id"), Some("example:later"));
+        let callback = event.get_compound("callback").expect("callback compound");
+        assert_eq!(callback.get_string("type"), Some("minecraft:function"));
+        assert_eq!(callback.get_string("id"), Some("example:later"));
     }
 }

@@ -5,10 +5,11 @@ Flavoured datapack to Pumpkin 26.2. It is deliberately not an upstream pull
 request: generic Pumpkin fixes must be extracted into focused branches and sent
 upstream separately.
 
-Current status: **first runtime slice implemented, not yet playable**. Pumpkin
+Current status: **function runtime and persistent scheduling implemented, not yet playable**. Pumpkin
 can discover the combined pack, validate its 26.2 format range, load all 95
-functions, run `minecraft:load`, and run `minecraft:tick`. Live Matcha testing
-now reaches the missing gameplay commands and selector features listed below.
+functions, run `minecraft:load` and `minecraft:tick`, and persist delayed
+function calls across restarts. Live Matcha testing now reaches the missing
+gameplay commands and selector features listed below.
 
 ## Inputs audited
 
@@ -55,7 +56,7 @@ this branch does not depend on the contributor fork remaining available.
 | Pack discovery, `pack.mcmeta`, reload, and resource registry | Whole pack | Folder and ZIP discovery plus the 107.1 format check are implemented. Reload and data-driven registries are still missing. | Add enabled-pack ordering and `/reload` when registry loading begins. |
 | Function loading and `minecraft:load` / `minecraft:tick` | 95 functions; both standard tags | Implemented with nested function tags, command-chain limits, recursion limits, and one-time line diagnostics. | Extend the runtime for function macros only when a target pack requires them. |
 | Scoreboards | 43 direct commands; 38 score conditions; 7 score result stores | Covered by the integrated scoreboard work. Matcha's objectives were created by its load function and confirmed to persist across a restart. | Fix the two Matcha lines that set `sleepTimerScore` before creating that objective. |
-| `/schedule function` | 11 calls | Missing. | Add a persistent function scheduler after the function runtime exists. |
+| `/schedule function` | 11 calls | Implemented with function/tag callbacks, append/replace/clear semantics, game-time tracking, duplicate suppression, and `scheduled_events.dat` persistence. | Exercise one of Matcha's scheduled mechanics in-game after its downstream commands work. |
 | `/stopwatch` and `execute if/unless stopwatch` | 7 creates; 41 conditions | Missing. | Implement the 26.2 stopwatch command and execute condition. |
 | `execute if items` | 47 conditions | Missing. | Add item-stack predicate matching and the execute condition. |
 | `execute if predicate` | 7 conditions | Missing. Loot predicates are not loaded. | Load predicates and expose them to execute and selectors. |
@@ -71,7 +72,7 @@ path. The shortest path to a visible Matcha milestone is:
 
 1. discover and validate the pack (**implemented**);
 2. load and run functions plus the load/tick tags (**implemented**);
-3. add `/schedule` and the missing execute conditions used by Matcha;
+3. add `/schedule` (**implemented**) and the missing execute conditions used by Matcha;
 4. load tags and predicates;
 5. make one data-driven content family work end-to-end, then expand registry
    coverage.
@@ -105,11 +106,21 @@ An isolated Pumpkin server booted directly against the unmodified
 - a second boot found the Matcha objectives already present, confirming
   scoreboard persistence.
 
-The first failures now identify the next implementation order: `/schedule`,
-`/stopwatch` plus its execute condition, namespaced and tagged selector types,
-then the remaining Matcha execute conditions. Empty-player selector failures
-and the two `sleepTimerScore` ordering errors are expected pack/runtime-context
-issues rather than loader failures.
+With scheduling implemented, the next failures are `/stopwatch` plus its
+execute condition, namespaced and tagged selector types, then the remaining
+Matcha execute conditions. Empty-player selector failures and the two
+`sleepTimerScore` ordering errors are expected pack/runtime-context issues
+rather than loader failures.
+
+### 2026-08-03 scheduler integration result
+
+An isolated two-boot test scheduled a function 1,200 ticks in the future,
+saved the world, and restarted Pumpkin. `/schedule clear test:later` removed
+exactly one event after restart, proving that the event was restored from
+`scheduled_events.dat`. Scheduling the same function for two ticks then ran it
+and changed its test score from 0 to 1. The file uses the vanilla 26.2 callback
+shape and the scheduler uses the persisted `Time` game clock rather than a
+process-local tick counter.
 
 ## Weekly upstream maintenance
 
@@ -165,6 +176,7 @@ cd Pumpkin-matcha-support
 cargo build --release
 ```
 
-At the current stage this builds a server that loads and executes Matcha's
-functions, but the missing commands and selector support above still prevent
-the datapack from being playable.
+At the current stage this builds a server that loads, executes, and schedules
+Matcha's functions, but the missing commands, execute conditions, selectors,
+and data-driven registries above still prevent the datapack from being
+playable.

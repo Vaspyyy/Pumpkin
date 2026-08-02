@@ -13,10 +13,10 @@ use crate::world_info::{
     MAXIMUM_SUPPORTED_LEVEL_VERSION, MAXIMUM_SUPPORTED_WORLD_DATA_VERSION,
     MINIMUM_SUPPORTED_LEVEL_VERSION, MINIMUM_SUPPORTED_WORLD_DATA_VERSION,
     data_files::{
-        minecraft_data_dir, read_game_rules, read_scoreboard, read_wandering_trader, read_weather,
-        read_world_clocks, read_world_gen_settings, write_custom_boss_events_stub,
-        write_game_rules, write_scheduled_events_stub, write_scoreboard, write_wandering_trader,
-        write_weather, write_world_clocks, write_world_gen_settings,
+        minecraft_data_dir, read_game_rules, read_scheduled_events, read_scoreboard,
+        read_wandering_trader, read_weather, read_world_clocks, read_world_gen_settings,
+        write_custom_boss_events_stub, write_game_rules, write_scheduled_events, write_scoreboard,
+        write_wandering_trader, write_weather, write_world_clocks, write_world_gen_settings,
     },
 };
 
@@ -134,6 +134,9 @@ impl WorldInfoReader for AnvilLevelInfo {
         // scoreboard.dat
         info.data.scoreboard_data = read_scoreboard(level_folder);
 
+        // scheduled_events.dat
+        info.data.scheduled_events = read_scheduled_events(level_folder);
+
         // (wandering_trader.dat is not part of LevelData; stored separately when needed)
 
         Ok(info.data)
@@ -220,7 +223,9 @@ impl WorldInfoWriter for AnvilLevelInfo {
         }
 
         // scheduled_events.dat
-        if let Err(e) = write_scheduled_events_stub(level_folder, data_version) {
+        let mut scheduled_events = info.scheduled_events.clone();
+        scheduled_events.data_version = data_version;
+        if let Err(e) = write_scheduled_events(level_folder, &scheduled_events) {
             error!("Failed to write scheduled_events.dat: {e}");
         }
 
@@ -247,7 +252,7 @@ mod test {
     use crate::world_info::{DataPacks, LevelData, WorldGenSettings, WorldVersion};
 
     use super::{AnvilLevelInfo, LevelDat, WorldInfoReader, WorldInfoWriter};
-    use crate::world_info::data_files::ScoreboardData;
+    use crate::world_info::data_files::{ScheduledEventsData, ScoreboardData};
 
     #[test]
     fn preserve_level_dat_seed() {
@@ -323,8 +328,10 @@ mod test {
             },
             world_gen_settings: WorldGenSettings::new(Seed(1)),
             last_played: 1733847709327,
+            game_time: 0,
             level_name: "New World".to_string(),
             scoreboard_data: ScoreboardData::default(),
+            scheduled_events: ScheduledEventsData::default(),
             spawn_x: 160,
             spawn_y: 70,
             spawn_z: 160,
