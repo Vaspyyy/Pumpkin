@@ -27,6 +27,12 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use tracing::warn;
 
+#[derive(Debug)]
+pub(crate) enum UnifiedCommandError {
+    Modern(CommandSyntaxError),
+    Legacy(crate::command::dispatcher::CommandError),
+}
+
 pub const ARG_SEPARATOR: &str = " ";
 pub const ARG_SEPARATOR_CHAR: char = ' ';
 
@@ -205,6 +211,30 @@ impl CommandDispatcher {
     ) -> Result<i32, CommandSyntaxError> {
         let mut reader = StringReader::new(input);
         self.execute_reader(&mut reader, source).await
+    }
+
+    /// Executes a command through the modern dispatcher and falls back to the
+    /// legacy dispatcher only when the command is unknown to the modern tree.
+    ///
+    /// This is intended for server-authored command sequences such as data pack
+    /// functions, where the caller needs a result instead of user-facing output.
+    pub(crate) async fn execute_input_with_fallback(
+        &self,
+        input: &str,
+        source: &CommandSource,
+    ) -> Result<i32, UnifiedCommandError> {
+        match self.execute_input(input, source).await {
+            Ok(result) => Ok(result),
+            Err(error) if error.is(&DISPATCHER_UNKNOWN_COMMAND) => {
+                let result = self
+                    .fallback_dispatcher
+                    .dispatch(&source.output, source.server().as_ref(), input)
+                    .await;
+                source.output.set_success_count(u32::from(result.is_ok()));
+                result.map(|()| 1).map_err(UnifiedCommandError::Legacy)
+            }
+            Err(error) => Err(UnifiedCommandError::Modern(error)),
+        }
     }
 
     /// Executes the given command in a [`StringReader`] with the provided source, returning a result of execution.

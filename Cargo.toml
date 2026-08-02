@@ -116,6 +116,7 @@ serde_repr = { version = "0.1", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 
 tempfile = { version = "3.27.0", default-features = false }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 proc-macro-error2 = { version = "2", default-features = false }
 aes = { version = "0.9", default-features = false }
 async-compression = { version = "0.4.43", default-features = false }

@@ -27,6 +27,7 @@ mod experience;
 mod fill;
 mod fillbiome;
 mod forceload;
+mod function;
 mod gamemode;
 mod gamerule;
 mod give;
@@ -177,6 +178,7 @@ pub async fn default_dispatcher(
     execute::register(&mut dispatcher, registry);
     fillbiome::register(&mut dispatcher, registry);
     forceload::register(&mut dispatcher, registry);
+    function::register(&mut dispatcher, registry);
     ride::register(&mut dispatcher, registry);
     recipe::register(&mut dispatcher, registry);
     help::register(&mut dispatcher, registry);

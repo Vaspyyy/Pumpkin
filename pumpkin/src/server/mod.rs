@@ -3,6 +3,7 @@ use crate::command::commands::default_dispatcher;
 use crate::command::commands::defaultgamemode::DefaultGamemode;
 use crate::data::VanillaData;
 use crate::data::player_server::ServerPlayerData;
+use crate::data_pack::DataPackManager;
 use crate::entity::{EntityBase, NBTStorage};
 use crate::item::registry::ItemRegistry;
 use crate::net::authentication::fetch_mojang_public_keys;
@@ -75,6 +76,9 @@ pub struct Server {
     pub advanced_config: AdvancedConfiguration,
 
     pub data: VanillaData,
+
+    /// Functions and function tags loaded from world-local data packs.
+    pub data_pack_manager: DataPackManager,
 
     /// Plugin manager
     pub plugin_manager: Arc<PluginManager>,
@@ -166,6 +170,9 @@ impl Server {
         );
 
         let world_path = basic_config.get_world_path();
+        let data_pack_world_path = world_path.clone();
+        let data_pack_loader =
+            tokio::task::spawn_blocking(move || DataPackManager::load(&data_pack_world_path));
 
         let block_registry = super::block::registry::default_registry();
 
@@ -264,10 +271,15 @@ impl Server {
                 .collect::<Vec<_>>()
         );
 
+        let data_pack_manager = data_pack_loader
+            .await
+            .expect("Data pack loading task panicked");
+
         let server = Self {
             basic_config,
             advanced_config,
             data: vanilla_data,
+            data_pack_manager,
             plugin_manager: Arc::new(PluginManager::new()),
             permission_manager: Arc::new(RwLock::new(PermissionManager::new(
                 permission_registry.clone(),
@@ -367,6 +379,8 @@ impl Server {
         }
 
         info!("All worlds loaded successfully.");
+
+        server.data_pack_manager.run_load_functions(&server).await;
 
         if server.advanced_config.networking.bedrock.online_mode {
             let server_clone = server.clone();
@@ -934,6 +948,7 @@ impl Server {
     /// Ticks the game logic for all worlds. This is the part that is affected by `/tick freeze`.
     pub async fn tick_worlds(self: &Arc<Self>) {
         self.task_scheduler.tick(self).await;
+        self.data_pack_manager.run_tick_functions(self).await;
 
         let mut set = JoinSet::new();
 

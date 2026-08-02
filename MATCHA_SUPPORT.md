@@ -5,9 +5,10 @@ Flavoured datapack to Pumpkin 26.2. It is deliberately not an upstream pull
 request: generic Pumpkin fixes must be extracted into focused branches and sent
 upstream separately.
 
-Current status: **engineering base only**. The scoreboard and command-chain
-prerequisites are integrated and tested, but Pumpkin cannot discover or run the
-datapack yet.
+Current status: **first runtime slice implemented, not yet playable**. Pumpkin
+can discover the combined pack, validate its 26.2 format range, load all 95
+functions, run `minecraft:load`, and run `minecraft:tick`. Live Matcha testing
+now reaches the missing gameplay commands and selector features listed below.
 
 ## Inputs audited
 
@@ -51,9 +52,9 @@ this branch does not depend on the contributor fork remaining available.
 
 | Matcha dependency | Measured use | Pumpkin status on this branch | Next action |
 | --- | ---: | --- | --- |
-| Pack discovery, `pack.mcmeta`, reload, and resource registry | Whole pack | Missing. `level.dat` records enabled pack names, but the server has no runtime datapack loader. | Implement pack discovery and a reloadable resource manager first. |
-| Function loading and `minecraft:load` / `minecraft:tick` | 95 functions; both standard tags | Missing. There is no `/function` command or function scheduler. | Add function parsing/execution, then wire load and tick tags. |
-| Scoreboards | 43 direct commands; 38 score conditions; 7 score result stores | Covered by the integrated scoreboard and command-chain work. | Re-run the existing in-game scoreboard suite once functions can execute. |
+| Pack discovery, `pack.mcmeta`, reload, and resource registry | Whole pack | Folder and ZIP discovery plus the 107.1 format check are implemented. Reload and data-driven registries are still missing. | Add enabled-pack ordering and `/reload` when registry loading begins. |
+| Function loading and `minecraft:load` / `minecraft:tick` | 95 functions; both standard tags | Implemented with nested function tags, command-chain limits, recursion limits, and one-time line diagnostics. | Extend the runtime for function macros only when a target pack requires them. |
+| Scoreboards | 43 direct commands; 38 score conditions; 7 score result stores | Covered by the integrated scoreboard work. Matcha's objectives were created by its load function and confirmed to persist across a restart. | Fix the two Matcha lines that set `sleepTimerScore` before creating that objective. |
 | `/schedule function` | 11 calls | Missing. | Add a persistent function scheduler after the function runtime exists. |
 | `/stopwatch` and `execute if/unless stopwatch` | 7 creates; 41 conditions | Missing. | Implement the 26.2 stopwatch command and execute condition. |
 | `execute if items` | 47 conditions | Missing. | Add item-stack predicate matching and the execute condition. |
@@ -61,15 +62,15 @@ this branch does not depend on the contributor fork remaining available.
 | `execute if biome` | 1 condition | Missing. | Add biome lookup condition. |
 | `execute on vehicle` | 10 modifiers | Missing. | Add the relation modifier after function execution works. |
 | `execute store result entity` | 3 stores | Missing. Only score result/success storage is implemented. | Add NBT-backed entity storage. |
-| Entity selector type tags such as `type=#minecraft:undead` | 67 selector occurrences | Missing. `@n`, scores, tags, and NBT selectors exist, but `type=#tag` is rejected. | Resolve entity type tags through the datapack tag registry. |
+| Entity selector types and type tags | 67 selector occurrences | Missing/broken. Live testing rejects both `type=#minecraft:undead` and namespaced direct types such as `type=minecraft:armor_stand`. | Fix namespaced type parsing, then resolve entity type tags through the datapack tag registry. |
 | Recipes, loot tables, advancements, enchantments, trades, and worldgen | 2,095 JSON files total | Pumpkin currently uses generated/static vanilla data rather than resources from an enabled pack. | Add registries incrementally; recipes and advancements are good early vertical slices. |
 | Client assets | 2,775 files in the combined pack; separate resource-only zip available | Pumpkin can advertise a Java resource-pack URL, but it does not serve this local archive automatically. | Host the resource-only zip and configure its URL/SHA-1 when gameplay support is ready. |
 
 This means scoreboard support is necessary, but it is no longer the critical
 path. The shortest path to a visible Matcha milestone is:
 
-1. discover and validate the pack;
-2. load and run functions plus the load/tick tags;
+1. discover and validate the pack (**implemented**);
+2. load and run functions plus the load/tick tags (**implemented**);
 3. add `/schedule` and the missing execute conditions used by Matcha;
 4. load tags and predicates;
 5. make one data-driven content family work end-to-end, then expand registry
@@ -90,6 +91,25 @@ vertical slice:
 6. One mechanic that uses a scheduled function works end-to-end.
 
 Only after this is green should the branch claim that Matcha is playable.
+
+### 2026-08-02 live runtime result
+
+An isolated Pumpkin server booted directly against the unmodified
+`Matcha_Flavoured_1_03.zip` and reported:
+
+- 1 data pack loaded;
+- 95 functions loaded;
+- 1 `minecraft:load` function resolved;
+- `minecraft:tick` ran for 25 seconds without a crash or repeated-log flood;
+- a clean shutdown and save;
+- a second boot found the Matcha objectives already present, confirming
+  scoreboard persistence.
+
+The first failures now identify the next implementation order: `/schedule`,
+`/stopwatch` plus its execute condition, namespaced and tagged selector types,
+then the remaining Matcha execute conditions. Empty-player selector failures
+and the two `sleepTimerScore` ordering errors are expected pack/runtime-context
+issues rather than loader failures.
 
 ## Weekly upstream maintenance
 
@@ -145,5 +165,6 @@ cd Pumpkin-matcha-support
 cargo build --release
 ```
 
-At the current stage this builds the integration server; it does not yet make
-the Matcha datapack loadable.
+At the current stage this builds a server that loads and executes Matcha's
+functions, but the missing commands and selector support above still prevent
+the datapack from being playable.
