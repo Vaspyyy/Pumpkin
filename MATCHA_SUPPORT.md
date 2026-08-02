@@ -5,11 +5,12 @@ Flavoured datapack to Pumpkin 26.2. It is deliberately not an upstream pull
 request: generic Pumpkin fixes must be extracted into focused branches and sent
 upstream separately.
 
-Current status: **function runtime and persistent scheduling implemented, not yet playable**. Pumpkin
-can discover the combined pack, validate its 26.2 format range, load all 95
-functions, run `minecraft:load` and `minecraft:tick`, and persist delayed
-function calls across restarts. Live Matcha testing now reaches the missing
-gameplay commands and selector features listed below.
+Current status: **function runtime, persistent scheduling, and persistent stopwatches
+implemented; not yet playable**. Pumpkin can discover the combined pack,
+validate its 26.2 format range, load all 95 functions, run `minecraft:load` and
+`minecraft:tick`, and persist delayed function calls and real-time stopwatches
+across restarts. Live Matcha testing now reaches the missing gameplay commands
+and selector features listed below.
 
 ## Inputs audited
 
@@ -57,7 +58,7 @@ this branch does not depend on the contributor fork remaining available.
 | Function loading and `minecraft:load` / `minecraft:tick` | 95 functions; both standard tags | Implemented with nested function tags, command-chain limits, recursion limits, and one-time line diagnostics. | Extend the runtime for function macros only when a target pack requires them. |
 | Scoreboards | 43 direct commands; 38 score conditions; 7 score result stores | Covered by the integrated scoreboard work. Matcha's objectives were created by its load function and confirmed to persist across a restart. | Fix the two Matcha lines that set `sleepTimerScore` before creating that objective. |
 | `/schedule function` | 11 calls | Implemented with function/tag callbacks, append/replace/clear semantics, game-time tracking, duplicate suppression, and `scheduled_events.dat` persistence. | Exercise one of Matcha's scheduled mechanics in-game after its downstream commands work. |
-| `/stopwatch` and `execute if/unless stopwatch` | 7 creates; 41 conditions | Missing. | Implement the 26.2 stopwatch command and execute condition. |
+| `/stopwatch` and `execute if/unless stopwatch` | 7 creates; 41 conditions | Implemented with vanilla-style elapsed-millisecond persistence; offline time is excluded. | Exercise a stopwatch-driven mechanic after selector parsing works. |
 | `execute if items` | 47 conditions | Missing. | Add item-stack predicate matching and the execute condition. |
 | `execute if predicate` | 7 conditions | Missing. Loot predicates are not loaded. | Load predicates and expose them to execute and selectors. |
 | `execute if biome` | 1 condition | Missing. | Add biome lookup condition. |
@@ -106,11 +107,11 @@ An isolated Pumpkin server booted directly against the unmodified
 - a second boot found the Matcha objectives already present, confirming
   scoreboard persistence.
 
-With scheduling implemented, the next failures are `/stopwatch` plus its
-execute condition, namespaced and tagged selector types, then the remaining
-Matcha execute conditions. Empty-player selector failures and the two
-`sleepTimerScore` ordering errors are expected pack/runtime-context issues
-rather than loader failures.
+With scheduling and stopwatches implemented, the first remaining failures are
+namespaced and tagged selector types, followed by the remaining Matcha execute
+conditions. Empty-player selector failures and the two `sleepTimerScore`
+ordering errors are expected pack/runtime-context issues rather than loader
+failures.
 
 ### 2026-08-03 scheduler integration result
 
@@ -121,6 +122,17 @@ exactly one event after restart, proving that the event was restored from
 and changed its test score from 0 to 1. The file uses the vanilla 26.2 callback
 shape and the scheduler uses the persisted `Time` game clock rather than a
 process-local tick counter.
+
+### 2026-08-03 stopwatch integration result
+
+The 26.2 `/stopwatch create`, `query`, `restart`, and `remove` operations and
+`execute if/unless stopwatch` conditions are implemented. A two-boot live test
+restarted a stopwatch, kept the server offline for over a minute, and observed
+about three seconds of elapsed runtime immediately after restart, confirming
+that persisted elapsed milliseconds exclude offline time. The unmodified
+Matcha archive then booted without any standalone stopwatch command or
+condition failures; its remaining lines containing `stopwatch` fail earlier at
+the namespaced entity-selector parser.
 
 ## Weekly upstream maintenance
 

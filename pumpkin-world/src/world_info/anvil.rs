@@ -14,9 +14,10 @@ use crate::world_info::{
     MINIMUM_SUPPORTED_LEVEL_VERSION, MINIMUM_SUPPORTED_WORLD_DATA_VERSION,
     data_files::{
         minecraft_data_dir, read_game_rules, read_scheduled_events, read_scoreboard,
-        read_wandering_trader, read_weather, read_world_clocks, read_world_gen_settings,
-        write_custom_boss_events_stub, write_game_rules, write_scheduled_events, write_scoreboard,
-        write_wandering_trader, write_weather, write_world_clocks, write_world_gen_settings,
+        read_stopwatches, read_wandering_trader, read_weather, read_world_clocks,
+        read_world_gen_settings, write_custom_boss_events_stub, write_game_rules,
+        write_scheduled_events, write_scoreboard, write_stopwatches, write_wandering_trader,
+        write_weather, write_world_clocks, write_world_gen_settings,
     },
 };
 
@@ -137,6 +138,9 @@ impl WorldInfoReader for AnvilLevelInfo {
         // scheduled_events.dat
         info.data.scheduled_events = read_scheduled_events(level_folder);
 
+        // stopwatches.dat
+        info.data.stopwatches = read_stopwatches(level_folder);
+
         // (wandering_trader.dat is not part of LevelData; stored separately when needed)
 
         Ok(info.data)
@@ -229,6 +233,13 @@ impl WorldInfoWriter for AnvilLevelInfo {
             error!("Failed to write scheduled_events.dat: {e}");
         }
 
+        // stopwatches.dat
+        let mut stopwatches = info.stopwatches.clone();
+        stopwatches.data_version = data_version;
+        if let Err(e) = write_stopwatches(level_folder, &stopwatches) {
+            error!("Failed to write stopwatches.dat: {e}");
+        }
+
         Ok(())
     }
 }
@@ -252,7 +263,7 @@ mod test {
     use crate::world_info::{DataPacks, LevelData, WorldGenSettings, WorldVersion};
 
     use super::{AnvilLevelInfo, LevelDat, WorldInfoReader, WorldInfoWriter};
-    use crate::world_info::data_files::{ScheduledEventsData, ScoreboardData};
+    use crate::world_info::data_files::{ScheduledEventsData, ScoreboardData, StopwatchesData};
 
     #[test]
     fn preserve_level_dat_seed() {
@@ -332,6 +343,7 @@ mod test {
             level_name: "New World".to_string(),
             scoreboard_data: ScoreboardData::default(),
             scheduled_events: ScheduledEventsData::default(),
+            stopwatches: StopwatchesData::default(),
             spawn_x: 160,
             spawn_y: 70,
             spawn_z: 160,

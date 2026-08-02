@@ -12,6 +12,7 @@ use crate::plugin::PluginManager;
 use crate::plugin::player::player_login::PlayerLoginEvent;
 use crate::plugin::server::server_broadcast::ServerBroadcastEvent;
 use crate::server::function_scheduler::FunctionScheduler;
+use crate::server::stopwatch::StopwatchManager;
 use crate::server::tick_rate_manager::ServerTickRateManager;
 use crate::world::WorldPortal;
 use crate::world::custom_bossbar::CustomBossbars;
@@ -61,6 +62,7 @@ mod key_store;
 pub mod recipe;
 pub mod scheduler;
 pub mod seasonal_events;
+pub mod stopwatch;
 pub mod tick_rate_manager;
 pub mod ticker;
 
@@ -146,6 +148,8 @@ pub struct Server {
     pub task_scheduler: Arc<TaskScheduler>,
     /// Manages persistent vanilla `/schedule function` events.
     pub function_scheduler: Arc<FunctionScheduler>,
+    /// Manages persistent real-time 26.2 stopwatches.
+    pub stopwatches: Arc<StopwatchManager>,
     tasks: TaskTracker,
     runtime: tokio::runtime::Handle,
 
@@ -282,6 +286,7 @@ impl Server {
             &level_info.load().scheduled_events,
             level_info.load().game_time,
         ));
+        let stopwatches = Arc::new(StopwatchManager::new(&level_info.load().stopwatches));
 
         let server = Self {
             basic_config,
@@ -320,6 +325,7 @@ impl Server {
             runtime: tokio::runtime::Handle::current(),
             task_scheduler: Arc::new(TaskScheduler::new()),
             function_scheduler,
+            stopwatches,
             server_guid: rand::random(),
             player_idle_timeout: AtomicI32::new(0),
             mojang_public_keys: ArcSwap::from_pointee(Vec::new()),
@@ -658,6 +664,7 @@ impl Server {
             .function_scheduler
             .snapshot(level_data.data_version)
             .await;
+        level_data.stopwatches = self.stopwatches.snapshot(level_data.data_version).await;
         self.level_info.store(Arc::new(level_data));
 
         let level_data = self.level_info.load();

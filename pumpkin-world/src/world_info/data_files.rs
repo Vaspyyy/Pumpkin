@@ -112,6 +112,14 @@ pub struct ScheduledEventCallbackData {
     pub id: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+pub struct StopwatchesData {
+    #[serde(default)]
+    pub stopwatches: std::collections::HashMap<String, i64>,
+    #[serde(rename = "DataVersion", default)]
+    pub data_version: i32,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct WanderingTraderData {
     #[serde(rename = "spawn_delay", default = "default_wandering_trader_delay")]
@@ -450,6 +458,39 @@ pub fn write_scheduled_events(
         .map_err(|error| WorldInfoError::SerializationError(error.to_string()))
 }
 
+pub fn read_stopwatches(level_folder: &Path) -> StopwatchesData {
+    let path = minecraft_data_dir(level_folder).join("stopwatches.dat");
+    if !path.exists() {
+        return StopwatchesData::default();
+    }
+
+    match File::open(&path) {
+        Ok(file) => match from_gzip_bytes::<DataFileRoot<StopwatchesData>, _>(file) {
+            Ok(root) => root.data,
+            Err(error) => {
+                warn!("Failed to deserialize stopwatches.dat, using defaults: {error}");
+                StopwatchesData::default()
+            }
+        },
+        Err(error) => {
+            warn!("Failed to open stopwatches.dat, using defaults: {error}");
+            StopwatchesData::default()
+        }
+    }
+}
+
+pub fn write_stopwatches(
+    level_folder: &Path,
+    data: &StopwatchesData,
+) -> Result<(), WorldInfoError> {
+    let dir = ensure_minecraft_data_dir(level_folder)?;
+    let path = dir.join("stopwatches.dat");
+    let file = File::create(&path)?;
+    let root = DataFileRoot { data: data.clone() };
+    to_gzip_bytes(&root, BufWriter::new(file))
+        .map_err(|error| WorldInfoError::SerializationError(error.to_string()))
+}
+
 /// Serializable scoreboard data for `data/minecraft/scoreboard.dat`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScoreboardData {
@@ -746,5 +787,30 @@ mod scheduled_events_tests {
         let callback = event.get_compound("callback").expect("callback compound");
         assert_eq!(callback.get_string("type"), Some("minecraft:function"));
         assert_eq!(callback.get_string("id"), Some("example:later"));
+    }
+}
+
+#[cfg(test)]
+mod stopwatches_tests {
+    use super::*;
+
+    #[test]
+    fn stopwatches_store_elapsed_milliseconds_and_round_trip() {
+        let temporary_directory = tempfile::tempdir().expect("temporary directory");
+        let data = StopwatchesData {
+            stopwatches: std::iter::once(("example:timer".to_string(), 12_345)).collect(),
+            data_version: 4903,
+        };
+
+        write_stopwatches(temporary_directory.path(), &data).expect("write stopwatches");
+        assert_eq!(read_stopwatches(temporary_directory.path()), data);
+
+        let path = minecraft_data_dir(temporary_directory.path()).join("stopwatches.dat");
+        let root = read_gzip_compound_tag(File::open(path).expect("open stopwatches"))
+            .expect("read stopwatches NBT");
+        let inner = root.get_compound("data").expect("data compound");
+        assert_eq!(inner.get_int("DataVersion"), Some(4903));
+        let stopwatches = inner.get_compound("stopwatches").expect("stopwatches map");
+        assert_eq!(stopwatches.get_long("example:timer"), Some(12_345));
     }
 }

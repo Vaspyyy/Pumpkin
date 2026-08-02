@@ -106,6 +106,10 @@ pub struct LevelData {
     /// Scheduled data pack functions persisted to `data/minecraft/scheduled_events.dat`.
     #[serde(skip_serializing, default)]
     pub scheduled_events: data_files::ScheduledEventsData,
+
+    /// Real-time stopwatches persisted to `data/minecraft/stopwatches.dat`.
+    #[serde(skip_serializing, default)]
+    pub stopwatches: data_files::StopwatchesData,
 }
 
 const DEFAULT_BORDER_DAMAGE_PER_BLOCK: f64 = 0.2;
@@ -366,6 +370,7 @@ impl LevelData {
             clear_weather_time: -1,
             scoreboard_data: data_files::ScoreboardData::default(),
             scheduled_events: data_files::ScheduledEventsData::default(),
+            stopwatches: data_files::StopwatchesData::default(),
         }
     }
 

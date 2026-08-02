@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use super::stopwatch::{
+    ERROR_DOES_NOT_EXIST as STOPWATCH_DOES_NOT_EXIST, StopwatchSuggestionProvider,
+};
 use crate::command::argument_builder::{ArgumentBuilder, argument, command, literal};
 use crate::command::argument_types::block::BlockArgumentType;
 use crate::command::argument_types::coordinates::block_pos::BlockPosArgumentType;
@@ -8,8 +11,9 @@ use crate::command::argument_types::coordinates::vec3::Vec3ArgumentType;
 use crate::command::argument_types::core::string::StringArgumentType;
 use crate::command::argument_types::entity::EntityArgumentType;
 use crate::command::argument_types::entity_anchor::EntityAnchorArgumentType;
+use crate::command::argument_types::identifier::IdentifierArgumentType;
 use crate::command::argument_types::objective::ObjectiveArgumentType;
-use crate::command::argument_types::range::IntRangeArgumentType;
+use crate::command::argument_types::range::{FloatRangeArgumentType, IntRangeArgumentType};
 use crate::command::argument_types::resource_key::ResourceKeyArgument;
 use crate::command::argument_types::score_holder::ScoreHolderArgumentType;
 use crate::command::context::command_context::CommandContext;
@@ -47,6 +51,8 @@ const SCORE_SOURCE_OBJECTIVE: &str = "scoreSourceObjective";
 const SCORE_RANGE: &str = "scoreRange";
 const STORE_TARGETS: &str = "storeTargets";
 const STORE_OBJECTIVE: &str = "storeObjective";
+const STOPWATCH_ID: &str = "stopwatchId";
+const STOPWATCH_RANGE: &str = "stopwatchRange";
 
 struct ExecuteRunExecutor;
 
@@ -533,6 +539,44 @@ fn score_condition(negated: bool) -> crate::command::argument_builder::LiteralAr
     )
 }
 
+fn execute_stopwatch_condition_modifier<'a>(
+    context: &'a CommandContext,
+    negated: bool,
+) -> crate::command::node::RedirectModifierResult<'a> {
+    Box::pin(async move {
+        let id = context.get_argument::<Identifier>(STOPWATCH_ID)?;
+        let range = FloatRangeArgumentType::get(context, STOPWATCH_RANGE)?;
+        let Some(elapsed) = context.server().stopwatches.elapsed_seconds(id).await else {
+            return Err(STOPWATCH_DOES_NOT_EXIST
+                .create_without_context(TextComponent::text(id.to_string())));
+        };
+        if range.matches(elapsed) == negated {
+            Ok(vec![])
+        } else {
+            Ok(vec![context.source.clone()])
+        }
+    })
+}
+
+fn stopwatch_condition_redirect(negated: bool) -> RedirectModifier {
+    RedirectModifier::Custom(Arc::new(move |context| {
+        execute_stopwatch_condition_modifier(context, negated)
+    }))
+}
+
+fn stopwatch_condition(negated: bool) -> crate::command::argument_builder::LiteralArgumentBuilder {
+    literal("stopwatch").then(
+        argument(STOPWATCH_ID, IdentifierArgumentType)
+            .suggests(StopwatchSuggestionProvider)
+            .then(
+                argument(STOPWATCH_RANGE, FloatRangeArgumentType).redirect_with_modifier(
+                    Redirection::Root,
+                    stopwatch_condition_redirect(negated),
+                ),
+            ),
+    )
+}
+
 struct StoreScoreCallback {
     world: Arc<World>,
     targets: Vec<String>,
@@ -752,7 +796,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                         ),
                     ),
                 )
-                .then(score_condition(false)),
+                .then(score_condition(false))
+                .then(stopwatch_condition(false)),
         )
         .then(
             literal("unless")
@@ -788,7 +833,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                         ),
                     ),
                 )
-                .then(score_condition(true)),
+                .then(score_condition(true))
+                .then(stopwatch_condition(true)),
         )
         .then(
             literal("store")
