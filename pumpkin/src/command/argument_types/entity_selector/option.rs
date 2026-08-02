@@ -10,6 +10,7 @@ use crate::command::suggestion::suggestions::SuggestionsBuilder;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::translation;
 use pumpkin_util::GameMode;
+use pumpkin_util::identifier::Identifier;
 use pumpkin_util::math::bounds::{DoubleBounds, FloatDegreeBounds, IntBounds};
 use pumpkin_util::text::TextComponent;
 use std::str::FromStr;
@@ -291,11 +292,20 @@ impl EntitySelectorOption {
                     parser.reader.set_cursor(start);
                     return Err(self.inapplicable_error(parser.reader));
                 }
-                let mut string = parser.reader.read_unquoted_string();
-                if let Some(stripped) = string.strip_prefix("minecraft:") {
-                    string = stripped.to_string();
+                let is_tag = parser.consume_tag_start();
+                let id = Identifier::from_reader(parser.reader)?;
+                if is_tag {
+                    parser.add_predicate(EntitySelectorPredicate::EntityTypeTag(id, invert));
+                    if invert {
+                        parser.set_flag(Flags::ENTITY_TYPE_INVERTED, true);
+                    } else {
+                        parser.set_flag(Flags::ENTITY_TYPE_EQUALS_SET, true);
+                    }
+                    return Ok(());
                 }
-                if let Some(entity_type) = EntityType::from_name(&string) {
+                if id.namespace() == "minecraft"
+                    && let Some(entity_type) = EntityType::from_name(id.path())
+                {
                     if entity_type.id == EntityType::PLAYER.id && !invert {
                         parser.limit_to_players();
                     }
@@ -303,12 +313,14 @@ impl EntitySelectorOption {
                     if invert {
                         parser.set_flag(Flags::ENTITY_TYPE_INVERTED, true);
                     } else {
+                        parser.set_flag(Flags::ENTITY_TYPE_EQUALS_SET, true);
                         parser.entity_type = Some(entity_type);
                     }
                     Ok(())
                 } else {
                     parser.reader.set_cursor(start);
-                    Err(TYPE_INVALID_ERROR_TYPE.create(parser.reader, TextComponent::text(string)))
+                    Err(TYPE_INVALID_ERROR_TYPE
+                        .create(parser.reader, TextComponent::text(id.to_string())))
                 }
             }
             Self::Name => {
@@ -449,7 +461,7 @@ impl EntitySelectorOption {
             Self::Sort => !parser.is_current_entity && !parser.has_flag(Flags::SORT_SET),
             Self::Gamemode => !parser.has_flag(Flags::GAMEMODE_EQUALS_SET),
             Self::Team => !parser.has_flag(Flags::TEAM_EQUALS_SET),
-            Self::Type => parser.entity_type.is_none(),
+            Self::Type => !parser.has_flag(Flags::ENTITY_TYPE_EQUALS_SET),
             Self::Scores => !parser.has_flag(Flags::SCORES_SET),
             Self::Advancements => !parser.has_flag(Flags::ADVANCEMENTS_SET),
             Self::Tag | Self::Nbt | Self::Predicate => true,

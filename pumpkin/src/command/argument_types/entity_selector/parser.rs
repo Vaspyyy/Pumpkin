@@ -82,6 +82,8 @@ bitflags! {
         const SCORES_SET = 1 << 10;
         /// Whether the `advancements` option has been set.
         const ADVANCEMENTS_SET = 1 << 11;
+        /// Whether a non-inverted `type` option has been set.
+        const ENTITY_TYPE_EQUALS_SET = 1 << 12;
     }
 }
 
@@ -620,5 +622,52 @@ impl EntitySelectorParserSuggestions {
                 suggestions
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: &str) -> EntitySelector {
+        let mut reader = StringReader::new(input.to_string());
+        let selector = EntitySelectorParser::new(&mut reader, true)
+            .parse_and_consume()
+            .expect("selector should parse");
+        assert_eq!(reader.cursor(), input.len());
+        selector
+    }
+
+    #[test]
+    fn parses_namespaced_direct_entity_type() {
+        let selector = parse("@e[type=minecraft:armor_stand]");
+        assert_eq!(selector.entity_type, Some(&EntityType::ARMOR_STAND));
+        assert!(selector.predicates.iter().any(|predicate| matches!(
+            predicate,
+            EntitySelectorPredicate::EntityType(entity_type, false)
+                if entity_type.id == EntityType::ARMOR_STAND.id
+        )));
+    }
+
+    #[test]
+    fn parses_namespaced_entity_type_tag() {
+        let selector = parse("@n[type=#main:mundane_hostiles]");
+        assert!(selector.predicates.iter().any(|predicate| matches!(
+            predicate,
+            EntitySelectorPredicate::EntityTypeTag(id, false)
+                if id == &pumpkin_util::identifier::Identifier::parse_static(
+                    "main:mundane_hostiles"
+                )
+        )));
+    }
+
+    #[test]
+    fn player_selectors_can_still_apply_a_type_option() {
+        let selector = parse("@a[type=minecraft:player]");
+        assert!(selector.predicates.iter().any(|predicate| matches!(
+            predicate,
+            EntitySelectorPredicate::EntityType(entity_type, false)
+                if entity_type.id == EntityType::PLAYER.id
+        )));
     }
 }

@@ -2,7 +2,10 @@ use crate::command::CommandSender;
 use crate::command::context::command_source::CommandSource;
 use crate::command::node::dispatcher::UnifiedCommandError;
 use crate::server::Server;
+use pumpkin_data::entity::EntityType;
+use pumpkin_data::tag::{RegistryKey, get_registry_key_tags};
 use pumpkin_util::identifier::Identifier;
+use pumpkin_util::version::JavaMinecraftVersion;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
 use std::cell::Cell;
@@ -55,6 +58,7 @@ pub struct DataPackFunction {
 pub struct DataPackManager {
     functions: FxHashMap<Identifier, Arc<DataPackFunction>>,
     tags: FxHashMap<Identifier, Vec<TagEntry>>,
+    entity_type_tags: FxHashMap<Identifier, Vec<EntityTypeTagEntry>>,
     load_functions: Arc<[Identifier]>,
     tick_functions: Arc<[Identifier]>,
     loaded_packs: Arc<[String]>,
@@ -66,6 +70,7 @@ impl Default for DataPackManager {
         Self {
             functions: FxHashMap::default(),
             tags: FxHashMap::default(),
+            entity_type_tags: vanilla_entity_type_tags(),
             load_functions: Arc::from([]),
             tick_functions: Arc::from([]),
             loaded_packs: Arc::from([]),
@@ -81,6 +86,12 @@ struct TagEntry {
     required: bool,
 }
 
+#[derive(Debug, Clone)]
+enum EntityTypeTagEntry {
+    EntityType(u16),
+    Tag { id: Identifier, required: bool },
+}
+
 #[derive(Debug)]
 struct PackFile {
     path: String,
@@ -94,16 +105,16 @@ struct LoadedPack {
 }
 
 #[derive(Debug, Deserialize)]
-struct FunctionTag {
+struct TagFile {
     #[serde(default)]
     replace: bool,
     #[serde(default)]
-    values: Vec<FunctionTagValue>,
+    values: Vec<TagFileValue>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum FunctionTagValue {
+enum TagFileValue {
     Id(String),
     Detailed {
         id: String,
@@ -114,6 +125,30 @@ enum FunctionTagValue {
 
 const fn required_by_default() -> bool {
     true
+}
+
+fn vanilla_entity_type_tags() -> FxHashMap<Identifier, Vec<EntityTypeTagEntry>> {
+    let mut tags = FxHashMap::default();
+    let Some(vanilla_tags) =
+        get_registry_key_tags(JavaMinecraftVersion::V_26_2, RegistryKey::EntityType)
+    else {
+        return tags;
+    };
+    for (raw_id, values) in vanilla_tags.entries() {
+        let Ok(id) = Identifier::parse(raw_id) else {
+            continue;
+        };
+        tags.insert(
+            id,
+            values
+                .1
+                .iter()
+                .copied()
+                .map(EntityTypeTagEntry::EntityType)
+                .collect(),
+        );
+    }
+    tags
 }
 
 impl DataPackManager {
@@ -176,6 +211,7 @@ impl DataPackManager {
         manager.tick_functions = manager
             .resolve_tag(&Identifier::vanilla_static("tick"))
             .into();
+        manager.validate_entity_type_tags();
         manager
     }
 
@@ -186,6 +222,48 @@ impl DataPackManager {
 
     pub fn function_ids(&self) -> impl Iterator<Item = &Identifier> {
         self.functions.keys()
+    }
+
+    /// Returns whether an entity type belongs to a vanilla or data-pack-defined
+    /// entity type tag.
+    #[must_use]
+    pub fn entity_type_is_tagged(&self, tag: &Identifier, entity_type: &EntityType) -> bool {
+        self.entity_type_tag_contains(tag, entity_type.id, &mut Vec::new())
+    }
+
+    fn entity_type_tag_contains(
+        &self,
+        tag: &Identifier,
+        entity_type_id: u16,
+        stack: &mut Vec<Identifier>,
+    ) -> bool {
+        if stack.contains(tag) {
+            return false;
+        }
+        let Some(entries) = self.entity_type_tags.get(tag) else {
+            return false;
+        };
+        stack.push(tag.clone());
+        let matches = entries.iter().any(|entry| match entry {
+            EntityTypeTagEntry::EntityType(id) => *id == entity_type_id,
+            EntityTypeTagEntry::Tag { id, .. } => {
+                self.entity_type_tag_contains(id, entity_type_id, stack)
+            }
+        });
+        stack.pop();
+        matches
+    }
+
+    fn validate_entity_type_tags(&self) {
+        for (tag_id, entries) in &self.entity_type_tags {
+            for entry in entries {
+                if let EntityTypeTagEntry::Tag { id, required: true } = entry
+                    && !self.entity_type_tags.contains_key(id)
+                {
+                    warn!("Required entity type tag #{id} referenced by #{tag_id} does not exist");
+                }
+            }
+        }
     }
 
     #[must_use]
@@ -426,42 +504,84 @@ impl DataPackManager {
                 continue;
             }
 
-            let Some(tag_id) = function_tag_id_from_path(&file.path) else {
-                continue;
-            };
-            let tag = match serde_json::from_slice::<FunctionTag>(&file.contents) {
-                Ok(tag) => tag,
-                Err(error) => {
-                    warn!(
-                        "Ignoring invalid function tag {tag_id} in data pack {}: {error}",
-                        pack.name
-                    );
-                    continue;
-                }
-            };
-
-            let entries = self.tags.entry(tag_id.clone()).or_default();
-            if tag.replace {
-                entries.clear();
+            if let Some(tag_id) = function_tag_id_from_path(&file.path) {
+                self.apply_function_tag(&pack.name, &tag_id, &file.contents);
+            } else if let Some(tag_id) = entity_type_tag_id_from_path(&file.path) {
+                self.apply_entity_type_tag(&pack.name, &tag_id, &file.contents);
             }
-            for value in tag.values {
-                let (raw_id, required) = match value {
-                    FunctionTagValue::Id(id) => (id, true),
-                    FunctionTagValue::Detailed { id, required } => (id, required),
-                };
-                let (is_tag, raw_id) = raw_id
-                    .strip_prefix('#')
-                    .map_or((false, raw_id.as_str()), |id| (true, id));
-                match Identifier::parse(raw_id) {
-                    Ok(id) => entries.push(TagEntry {
-                        id,
-                        is_tag,
-                        required,
-                    }),
+        }
+    }
+
+    fn apply_function_tag(&mut self, pack_name: &str, tag_id: &Identifier, contents: &[u8]) {
+        let tag = match serde_json::from_slice::<TagFile>(contents) {
+            Ok(tag) => tag,
+            Err(error) => {
+                warn!("Ignoring invalid function tag {tag_id} in data pack {pack_name}: {error}");
+                return;
+            }
+        };
+        let entries = self.tags.entry(tag_id.clone()).or_default();
+        if tag.replace {
+            entries.clear();
+        }
+        for value in tag.values {
+            let (raw_id, required) = tag_value_parts(value);
+            let (is_tag, raw_id) = raw_id
+                .strip_prefix('#')
+                .map_or((false, raw_id.as_str()), |id| (true, id));
+            match Identifier::parse(raw_id) {
+                Ok(id) => entries.push(TagEntry {
+                    id,
+                    is_tag,
+                    required,
+                }),
+                Err(error) => warn!(
+                    "Ignoring invalid identifier {raw_id:?} in function tag {tag_id}: {error}"
+                ),
+            }
+        }
+    }
+
+    fn apply_entity_type_tag(&mut self, pack_name: &str, tag_id: &Identifier, contents: &[u8]) {
+        let tag = match serde_json::from_slice::<TagFile>(contents) {
+            Ok(tag) => tag,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid entity type tag {tag_id} in data pack {pack_name}: {error}"
+                );
+                return;
+            }
+        };
+        let entries = self.entity_type_tags.entry(tag_id.clone()).or_default();
+        if tag.replace {
+            entries.clear();
+        }
+        for value in tag.values {
+            let (raw_id, required) = tag_value_parts(value);
+            if let Some(raw_tag_id) = raw_id.strip_prefix('#') {
+                match Identifier::parse(raw_tag_id) {
+                    Ok(id) => entries.push(EntityTypeTagEntry::Tag { id, required }),
                     Err(error) => warn!(
-                        "Ignoring invalid identifier {raw_id:?} in function tag {tag_id}: {error}"
+                        "Ignoring invalid tag identifier {raw_tag_id:?} in entity type tag {tag_id}: {error}"
                     ),
                 }
+                continue;
+            }
+            match Identifier::parse(&raw_id) {
+                Ok(id) if id.namespace() == "minecraft" => {
+                    if let Some(entity_type) = EntityType::from_name(id.path()) {
+                        entries.push(EntityTypeTagEntry::EntityType(entity_type.id));
+                    } else if required {
+                        warn!("Required entity type {id} referenced by #{tag_id} does not exist");
+                    }
+                }
+                Ok(id) if required => {
+                    warn!("Required entity type {id} referenced by #{tag_id} is not registered");
+                }
+                Ok(_) => {}
+                Err(error) => warn!(
+                    "Ignoring invalid identifier {raw_id:?} in entity type tag {tag_id}: {error}"
+                ),
             }
         }
     }
@@ -668,6 +788,8 @@ fn is_relevant_data_file(path: &str) -> bool {
     path.starts_with("data/")
         && (extension.is_some_and(|extension| extension.eq_ignore_ascii_case("mcfunction"))
             || (path.contains("/tags/function/")
+                && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
+            || (path.contains("/tags/entity_type/")
                 && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json"))))
 }
 
@@ -676,10 +798,29 @@ fn function_id_from_path(path: &str) -> Option<Identifier> {
 }
 
 fn function_tag_id_from_path(path: &str) -> Option<Identifier> {
+    tag_id_from_path(path, "function")
+}
+
+fn entity_type_tag_id_from_path(path: &str) -> Option<Identifier> {
+    tag_id_from_path(path, "entity_type")
+}
+
+fn tag_id_from_path(path: &str, registry: &str) -> Option<Identifier> {
     let path = path.strip_prefix("data/")?;
     let (namespace, path) = path.split_once('/')?;
-    let path = path.strip_prefix("tags/function/")?.strip_suffix(".json")?;
+    let path = path
+        .strip_prefix("tags/")?
+        .strip_prefix(registry)?
+        .strip_prefix('/')?
+        .strip_suffix(".json")?;
     Identifier::new(namespace.to_string(), path.to_string()).ok()
+}
+
+fn tag_value_parts(value: TagFileValue) -> (String, bool) {
+    match value {
+        TagFileValue::Id(id) => (id, true),
+        TagFileValue::Detailed { id, required } => (id, required),
+    }
 }
 
 fn resource_id_from_path(path: &str, directory: &str, suffix: &str) -> Option<Identifier> {
@@ -766,6 +907,44 @@ mod tests {
         assert_eq!(function.commands.len(), 1);
         assert_eq!(&*function.commands[0].command, "say hello");
         assert_eq!(function.commands[0].line, 3);
+    }
+
+    #[test]
+    fn loads_nested_entity_type_tags_on_top_of_vanilla_tags() {
+        let temp = tempdir().unwrap();
+        let pack = temp.path().join("datapacks/test");
+        fs::create_dir_all(pack.join("data/example/tags/entity_type")).unwrap();
+        fs::create_dir_all(pack.join("data/minecraft/tags/entity_type")).unwrap();
+        fs::write(pack.join("pack.mcmeta"), metadata()).unwrap();
+        fs::write(
+            pack.join("data/example/tags/entity_type/hostiles.json"),
+            r##"{"values":["minecraft:zombie","#minecraft:skeletons"]}"##,
+        )
+        .unwrap();
+        fs::write(
+            pack.join("data/minecraft/tags/entity_type/undead.json"),
+            r#"{"replace":true,"values":["minecraft:cow"]}"#,
+        )
+        .unwrap();
+
+        let manager = DataPackManager::load(temp.path());
+        let hostiles = Identifier::parse_static("example:hostiles");
+        let undead = Identifier::parse_static("minecraft:undead");
+
+        assert!(manager.entity_type_is_tagged(&hostiles, &EntityType::ZOMBIE));
+        assert!(manager.entity_type_is_tagged(&hostiles, &EntityType::SKELETON));
+        assert!(!manager.entity_type_is_tagged(&hostiles, &EntityType::COW));
+        assert!(manager.entity_type_is_tagged(&undead, &EntityType::COW));
+        assert!(!manager.entity_type_is_tagged(&undead, &EntityType::ZOMBIE));
+    }
+
+    #[test]
+    fn default_manager_exposes_vanilla_entity_type_tags() {
+        let manager = DataPackManager::default();
+        let undead = Identifier::parse_static("minecraft:undead");
+
+        assert!(manager.entity_type_is_tagged(&undead, &EntityType::ZOMBIE));
+        assert!(!manager.entity_type_is_tagged(&undead, &EntityType::COW));
     }
 
     #[test]

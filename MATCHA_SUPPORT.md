@@ -5,12 +5,13 @@ Flavoured datapack to Pumpkin 26.2. It is deliberately not an upstream pull
 request: generic Pumpkin fixes must be extracted into focused branches and sent
 upstream separately.
 
-Current status: **function runtime, persistent scheduling, and persistent stopwatches
-implemented; not yet playable**. Pumpkin can discover the combined pack,
-validate its 26.2 format range, load all 95 functions, run `minecraft:load` and
-`minecraft:tick`, and persist delayed function calls and real-time stopwatches
-across restarts. Live Matcha testing now reaches the missing gameplay commands
-and selector features listed below.
+Current status: **function runtime, persistent scheduling, persistent stopwatches,
+and entity type selectors implemented; not yet playable**. Pumpkin can discover
+the combined pack, validate its 26.2 format range, load all 95 functions, run
+`minecraft:load` and `minecraft:tick`, persist delayed function calls and
+real-time stopwatches across restarts, and resolve namespaced direct entity
+types plus vanilla and pack-defined entity type tags. Live Matcha testing now
+reaches the missing gameplay commands listed below.
 
 ## Inputs audited
 
@@ -64,7 +65,7 @@ this branch does not depend on the contributor fork remaining available.
 | `execute if biome` | 1 condition | Missing. | Add biome lookup condition. |
 | `execute on vehicle` | 10 modifiers | Missing. | Add the relation modifier after function execution works. |
 | `execute store result entity` | 3 stores | Missing. Only score result/success storage is implemented. | Add NBT-backed entity storage. |
-| Entity selector types and type tags | 67 selector occurrences | Missing/broken. Live testing rejects both `type=#minecraft:undead` and namespaced direct types such as `type=minecraft:armor_stand`. | Fix namespaced type parsing, then resolve entity type tags through the datapack tag registry. |
+| Entity selector types and type tags | 67 selector occurrences | Implemented for namespaced direct types and vanilla/custom/nested entity type tags, including tag replacement. Predicate evaluation is asynchronous so entity tags, teams, scores, advancements, and NBT do not block Tokio workers. | Extend the same data-pack tag registry pattern to item and biome conditions as those features land. |
 | Recipes, loot tables, advancements, enchantments, trades, and worldgen | 2,095 JSON files total | Pumpkin currently uses generated/static vanilla data rather than resources from an enabled pack. | Add registries incrementally; recipes and advancements are good early vertical slices. |
 | Client assets | 2,775 files in the combined pack; separate resource-only zip available | Pumpkin can advertise a Java resource-pack URL, but it does not serve this local archive automatically. | Host the resource-only zip and configure its URL/SHA-1 when gameplay support is ready. |
 
@@ -107,11 +108,10 @@ An isolated Pumpkin server booted directly against the unmodified
 - a second boot found the Matcha objectives already present, confirming
   scoreboard persistence.
 
-With scheduling and stopwatches implemented, the first remaining failures are
-namespaced and tagged selector types, followed by the remaining Matcha execute
-conditions. Empty-player selector failures and the two `sleepTimerScore`
-ordering errors are expected pack/runtime-context issues rather than loader
-failures.
+With scheduling, stopwatches, and entity type selectors implemented, the first
+remaining failures are the remaining Matcha execute conditions. Empty-player
+selector failures and the two `sleepTimerScore` ordering errors are expected
+pack/runtime-context issues rather than loader failures.
 
 ### 2026-08-03 scheduler integration result
 
@@ -133,6 +133,17 @@ that persisted elapsed milliseconds exclude offline time. The unmodified
 Matcha archive then booted without any standalone stopwatch command or
 condition failures; its remaining lines containing `stopwatch` fail earlier at
 the namespaced entity-selector parser.
+
+### 2026-08-03 entity type selector integration result
+
+Focused parser and registry tests cover `type=minecraft:armor_stand`,
+`type=#main:mundane_hostiles`, nested tags, the generated 26.2 vanilla tags,
+and data-pack `replace`. In a live server using the unmodified Matcha archive,
+an armor stand matched its namespaced direct type, and a zombie matched both
+`#minecraft:undead` and Matcha's `#main:mundane_hostiles` tag. Spawning those
+entities also exposed an existing selector panic caused by blocking Tokio
+mutexes while evaluating scoreboard tags; selector predicates now await those
+locks, and the same live commands and Matcha tick loop remained stable.
 
 ## Weekly upstream maintenance
 
