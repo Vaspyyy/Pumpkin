@@ -232,6 +232,7 @@ pub mod hex_color;
 pub mod identifier;
 pub mod item_predicate;
 pub mod nbt;
+pub mod nbt_path;
 pub mod objective;
 pub mod objective_criteria;
 pub mod placed_feature;

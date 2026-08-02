@@ -1159,8 +1159,9 @@ async fn apply_operation(
         return Err(OBJECTIVE_NOT_FOUND_ERROR.create_without_context());
     }
 
-    let mut last_new_value = 0;
+    let mut result = 0i32;
     for target_name in &targets {
+        let mut last_new_value = 0;
         for source_name in &sources {
             let Some(source_score) = scoreboard
                 .get_player_score_info(source_name, source_objective)
@@ -1195,6 +1196,7 @@ async fn apply_operation(
                 scoreboard.update_score(world, source_update).await;
             }
         }
+        result = result.wrapping_add(last_new_value);
     }
 
     drop(scoreboard);
@@ -1209,7 +1211,7 @@ async fn apply_operation(
                     [
                         TextComponent::text(objective_name.to_string()),
                         TextComponent::text(targets[0].clone()),
-                        TextComponent::text(last_new_value.to_string()),
+                        TextComponent::text(result.to_string()),
                     ],
                 ),
                 true,
@@ -1232,7 +1234,7 @@ async fn apply_operation(
             .await;
     }
 
-    Ok(targets.len() as i32)
+    Ok(result)
 }
 
 macro_rules! make_operation_executor {

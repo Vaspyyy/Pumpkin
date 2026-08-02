@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::stopwatch::{
     ERROR_DOES_NOT_EXIST as STOPWATCH_DOES_NOT_EXIST, StopwatchSuggestionProvider,
@@ -8,11 +9,13 @@ use crate::command::argument_types::block::BlockArgumentType;
 use crate::command::argument_types::coordinates::block_pos::BlockPosArgumentType;
 use crate::command::argument_types::coordinates::rotation::RotationArgumentType;
 use crate::command::argument_types::coordinates::vec3::Vec3ArgumentType;
+use crate::command::argument_types::core::double::DoubleArgumentType;
 use crate::command::argument_types::core::string::StringArgumentType;
 use crate::command::argument_types::entity::EntityArgumentType;
 use crate::command::argument_types::entity_anchor::EntityAnchorArgumentType;
 use crate::command::argument_types::identifier::IdentifierArgumentType;
 use crate::command::argument_types::item_predicate::ItemPredicateArgumentType;
+use crate::command::argument_types::nbt_path::{NbtPath, NbtPathArgumentType};
 use crate::command::argument_types::objective::ObjectiveArgumentType;
 use crate::command::argument_types::range::{FloatRangeArgumentType, IntRangeArgumentType};
 use crate::command::argument_types::resource_key::ResourceKeyArgument;
@@ -25,9 +28,12 @@ use crate::command::node::attached::{CommandNodeId, NodeId};
 use crate::command::node::dispatcher::CommandDispatcher;
 use crate::command::node::tree::Tree;
 use crate::command::node::{CommandExecutor, CommandExecutorResult, RedirectModifier, Redirection};
+use crate::entity::EntityBase;
 use crate::world::World;
 use crate::world::scoreboard::ScoreboardScore;
 use pumpkin_data::translation;
+use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_nbt::tag::NbtTag;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
@@ -53,6 +59,9 @@ const SCORE_SOURCE_OBJECTIVE: &str = "scoreSourceObjective";
 const SCORE_RANGE: &str = "scoreRange";
 const STORE_TARGETS: &str = "storeTargets";
 const STORE_OBJECTIVE: &str = "storeObjective";
+const STORE_ENTITY_TARGET: &str = "storeEntityTarget";
+const STORE_ENTITY_PATH: &str = "storeEntityPath";
+const STORE_ENTITY_SCALE: &str = "storeEntityScale";
 const STOPWATCH_ID: &str = "stopwatchId";
 const STOPWATCH_RANGE: &str = "stopwatchRange";
 const ITEM_TARGETS: &str = "itemTargets";
@@ -749,6 +758,137 @@ fn store_score(store_success: bool) -> crate::command::argument_builder::Literal
     )
 }
 
+#[derive(Clone, Copy)]
+enum StoreDataType {
+    Byte,
+    Short,
+    Int,
+    Long,
+    Float,
+    Double,
+}
+
+impl StoreDataType {
+    const fn convert(self, value: f64) -> NbtTag {
+        match self {
+            Self::Byte => NbtTag::Byte(value as i8),
+            Self::Short => NbtTag::Short(value as i16),
+            Self::Int => NbtTag::Int(value as i32),
+            Self::Long => NbtTag::Long(value as i64),
+            Self::Float => NbtTag::Float(value as f32),
+            Self::Double => NbtTag::Double(value),
+        }
+    }
+}
+
+struct StoreEntityCallback {
+    target: Arc<dyn EntityBase>,
+    path: NbtPath,
+    data_type: StoreDataType,
+    scale: f64,
+    store_success: bool,
+}
+
+impl ReturnValueCallable for StoreEntityCallback {
+    fn call(
+        &self,
+        return_value: ReturnValue,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let result = if self.store_success {
+                i32::from(return_value.success_value())
+            } else {
+                return_value.result_value()
+            };
+            let value = self.data_type.convert(f64::from(result) * self.scale);
+            let mut nbt = NbtCompound::new();
+            self.target.write_nbt(&mut nbt).await;
+            if self.path.set(&mut nbt, value) {
+                self.target.read_nbt_non_mut(&nbt).await;
+                self.target
+                    .get_entity()
+                    .velocity_dirty
+                    .store(true, Ordering::SeqCst);
+            }
+        })
+    }
+}
+
+fn execute_store_entity_modifier<'a>(
+    context: &'a CommandContext,
+    data_type: StoreDataType,
+    store_success: bool,
+) -> crate::command::node::RedirectModifierResult<'a> {
+    Box::pin(async move {
+        let target = EntityArgumentType::get_entity(context, STORE_ENTITY_TARGET).await?;
+        let path = NbtPathArgumentType::get(context, STORE_ENTITY_PATH)?.clone();
+        let scale = DoubleArgumentType::get(context, STORE_ENTITY_SCALE)?;
+        let callback = Arc::new(StoreEntityCallback {
+            target,
+            path,
+            data_type,
+            scale,
+            store_success,
+        });
+        let mut source = context.source.as_ref().clone();
+        source = source.merge_command_result_taker(&ResultValueTaker(vec![callback]));
+        Ok(vec![Arc::new(source)])
+    })
+}
+
+fn store_entity_redirect(data_type: StoreDataType, store_success: bool) -> RedirectModifier {
+    RedirectModifier::Custom(Arc::new(move |context| {
+        execute_store_entity_modifier(context, data_type, store_success)
+    }))
+}
+
+fn store_entity_type(
+    name: &'static str,
+    data_type: StoreDataType,
+    store_success: bool,
+) -> crate::command::argument_builder::LiteralArgumentBuilder {
+    literal(name).then(
+        argument(STORE_ENTITY_SCALE, DoubleArgumentType::any()).redirect_with_modifier(
+            Redirection::Root,
+            store_entity_redirect(data_type, store_success),
+        ),
+    )
+}
+
+fn store_entity(store_success: bool) -> crate::command::argument_builder::LiteralArgumentBuilder {
+    literal("entity").then(
+        argument(STORE_ENTITY_TARGET, EntityArgumentType::Entity).then(
+            argument(STORE_ENTITY_PATH, NbtPathArgumentType)
+                .then(store_entity_type(
+                    "byte",
+                    StoreDataType::Byte,
+                    store_success,
+                ))
+                .then(store_entity_type(
+                    "short",
+                    StoreDataType::Short,
+                    store_success,
+                ))
+                .then(store_entity_type("int", StoreDataType::Int, store_success))
+                .then(store_entity_type(
+                    "long",
+                    StoreDataType::Long,
+                    store_success,
+                ))
+                .then(store_entity_type(
+                    "float",
+                    StoreDataType::Float,
+                    store_success,
+                ))
+                .then(store_entity_type(
+                    "double",
+                    StoreDataType::Double,
+                    store_success,
+                )),
+        ),
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionRegistry) {
     registry.register_permission_or_panic(Permission::new(
@@ -929,8 +1069,16 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
         )
         .then(
             literal("store")
-                .then(literal("result").then(store_score(false)))
-                .then(literal("success").then(store_score(true))),
+                .then(
+                    literal("result")
+                        .then(store_score(false))
+                        .then(store_entity(false)),
+                )
+                .then(
+                    literal("success")
+                        .then(store_score(true))
+                        .then(store_entity(true)),
+                ),
         );
 
     let execute_node_id = dispatcher.register(builder);
