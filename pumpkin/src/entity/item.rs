@@ -418,8 +418,12 @@ impl NBTStorage for ItemEntity {
             }
 
             // Vanilla stores Age as a short
-            self.item_age
-                .store(nbt.get_short("Age").unwrap_or(0) as u32, Ordering::Relaxed);
+            let age = nbt
+                .get_short("Age")
+                .map(i32::from)
+                .or_else(|| nbt.get_int("Age"))
+                .unwrap_or(0);
+            self.item_age.store(age as u32, Ordering::Relaxed);
 
             // Vanilla stores PickupDelay as a short
             if let Some(delay) = nbt.get_short("PickupDelay") {

@@ -2,6 +2,7 @@ use super::{Entity, EntityBase, NBTStorage, living::LivingEntity};
 use crate::{entity::EntityBaseFuture, server::Server};
 use core::f32;
 use pumpkin_data::{Block, meta_data_type::MetaDataType, tracked_data::TrackedData};
+use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::{codec::var_int::VarInt, java::client::play::Metadata};
 use pumpkin_util::math::vector3::Vector3;
 use std::{
@@ -31,7 +32,26 @@ impl TNTEntity {
     }
 }
 
-impl NBTStorage for TNTEntity {}
+impl NBTStorage for TNTEntity {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> super::NbtFuture<'a, ()> {
+        Box::pin(async move {
+            self.entity.write_nbt(nbt).await;
+            nbt.put_int("fuse", self.fuse.load(Relaxed) as i32);
+        })
+    }
+
+    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> super::NbtFuture<'a, ()> {
+        Box::pin(async move {
+            self.entity.read_nbt_non_mut(nbt).await;
+            if let Some(fuse) = nbt
+                .get_int("fuse")
+                .or_else(|| nbt.get_short("Fuse").map(i32::from))
+            {
+                self.fuse.store(fuse.max(0) as u32, Relaxed);
+            }
+        })
+    }
+}
 
 impl EntityBase for TNTEntity {
     fn tick<'a>(
