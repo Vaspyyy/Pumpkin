@@ -230,6 +230,7 @@ pub mod function;
 pub mod game_profile;
 pub mod hex_color;
 pub mod identifier;
+pub mod item_predicate;
 pub mod nbt;
 pub mod objective;
 pub mod objective_criteria;

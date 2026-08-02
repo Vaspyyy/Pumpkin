@@ -154,6 +154,23 @@ impl ItemStack {
         }
         None
     }
+
+    /// Returns the effective value of a data component after applying this
+    /// stack's component patch to the item's defaults.
+    #[must_use]
+    pub fn get_data_component_dyn(
+        &self,
+        component: DataComponent,
+    ) -> Option<&dyn DataComponentImpl> {
+        if let Some((_, value)) = self.patch.iter().find(|(id, _)| *id == component) {
+            return value.as_deref();
+        }
+        self.item
+            .components
+            .iter()
+            .find_map(|(id, value)| (*id == component).then_some(*value))
+    }
+
     #[must_use]
     pub fn get_data_component_mut<T: DataComponentImpl + 'static>(&mut self) -> Option<&mut T> {
         let to_get_id = T::get_enum();

@@ -12,10 +12,12 @@ use crate::command::argument_types::core::string::StringArgumentType;
 use crate::command::argument_types::entity::EntityArgumentType;
 use crate::command::argument_types::entity_anchor::EntityAnchorArgumentType;
 use crate::command::argument_types::identifier::IdentifierArgumentType;
+use crate::command::argument_types::item_predicate::ItemPredicateArgumentType;
 use crate::command::argument_types::objective::ObjectiveArgumentType;
 use crate::command::argument_types::range::{FloatRangeArgumentType, IntRangeArgumentType};
 use crate::command::argument_types::resource_key::ResourceKeyArgument;
 use crate::command::argument_types::score_holder::ScoreHolderArgumentType;
+use crate::command::argument_types::slot::SlotsArgumentType;
 use crate::command::context::command_context::CommandContext;
 use crate::command::context::command_source::{ResultValueTaker, ReturnValue, ReturnValueCallable};
 use crate::command::errors::error_types::CommandErrorType;
@@ -53,6 +55,9 @@ const STORE_TARGETS: &str = "storeTargets";
 const STORE_OBJECTIVE: &str = "storeObjective";
 const STOPWATCH_ID: &str = "stopwatchId";
 const STOPWATCH_RANGE: &str = "stopwatchRange";
+const ITEM_TARGETS: &str = "itemTargets";
+const ITEM_SLOTS: &str = "itemSlots";
+const ITEM_PREDICATE: &str = "itemPredicate";
 
 struct ExecuteRunExecutor;
 
@@ -577,6 +582,64 @@ fn stopwatch_condition(negated: bool) -> crate::command::argument_builder::Liter
     )
 }
 
+async fn items_condition_matches(
+    context: &CommandContext<'_>,
+) -> Result<bool, crate::command::errors::command_syntax_error::CommandSyntaxError> {
+    let targets = EntityArgumentType::get_optional_entities(context, ITEM_TARGETS).await?;
+    let slots = SlotsArgumentType::get(context, ITEM_SLOTS)?;
+    let predicate = ItemPredicateArgumentType::get(context, ITEM_PREDICATE)?;
+
+    for target in targets {
+        let Some(player) = target.get_player() else {
+            continue;
+        };
+        for slot in slots {
+            let Some(stack) = player.inventory().main_inventory.get(*slot) else {
+                continue;
+            };
+            let stack = stack.lock().await;
+            if predicate.test(&stack) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn execute_items_condition_modifier<'a>(
+    context: &'a CommandContext,
+    negated: bool,
+) -> crate::command::node::RedirectModifierResult<'a> {
+    Box::pin(async move {
+        if items_condition_matches(context).await? == negated {
+            Ok(vec![])
+        } else {
+            Ok(vec![context.source.clone()])
+        }
+    })
+}
+
+fn items_condition_redirect(negated: bool) -> RedirectModifier {
+    RedirectModifier::Custom(Arc::new(move |context| {
+        execute_items_condition_modifier(context, negated)
+    }))
+}
+
+fn items_condition(negated: bool) -> crate::command::argument_builder::LiteralArgumentBuilder {
+    literal("items").then(
+        literal("entity").then(
+            argument(ITEM_TARGETS, EntityArgumentType::Entities).then(
+                argument(ITEM_SLOTS, SlotsArgumentType).then(
+                    argument(ITEM_PREDICATE, ItemPredicateArgumentType).redirect_with_modifier(
+                        Redirection::Root,
+                        items_condition_redirect(negated),
+                    ),
+                ),
+            ),
+        ),
+    )
+}
+
 struct StoreScoreCallback {
     world: Arc<World>,
     targets: Vec<String>,
@@ -797,7 +860,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                     ),
                 )
                 .then(score_condition(false))
-                .then(stopwatch_condition(false)),
+                .then(stopwatch_condition(false))
+                .then(items_condition(false)),
         )
         .then(
             literal("unless")
@@ -834,7 +898,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                     ),
                 )
                 .then(score_condition(true))
-                .then(stopwatch_condition(true)),
+                .then(stopwatch_condition(true))
+                .then(items_condition(true)),
         )
         .then(
             literal("store")
