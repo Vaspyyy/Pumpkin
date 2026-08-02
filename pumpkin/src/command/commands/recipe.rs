@@ -66,13 +66,19 @@ impl SuggestionProvider for RecipeSuggestionProvider {
     }
 }
 
-struct RecipeGiveExecutor;
+struct RecipeGiveExecutor {
+    all: bool,
+}
 
 impl CommandExecutor for RecipeGiveExecutor {
     fn execute<'a>(&'a self, context: &'a CommandContext) -> CommandExecutorResult<'a> {
         Box::pin(async move {
             let targets = EntityArgumentType::get_players(context, "targets").await?;
-            let recipe_str = StringArgumentType::get(context, "recipe")?;
+            let recipe_str = if self.all {
+                "*"
+            } else {
+                StringArgumentType::get(context, "recipe")?
+            };
 
             let server = context.source.server.as_ref().ok_or_else(|| {
                 ERROR_RECIPE_NOT_FOUND
@@ -139,13 +145,19 @@ impl CommandExecutor for RecipeGiveExecutor {
     }
 }
 
-struct RecipeTakeExecutor;
+struct RecipeTakeExecutor {
+    all: bool,
+}
 
 impl CommandExecutor for RecipeTakeExecutor {
     fn execute<'a>(&'a self, context: &'a CommandContext) -> CommandExecutorResult<'a> {
         Box::pin(async move {
             let targets = EntityArgumentType::get_players(context, "targets").await?;
-            let recipe_str = StringArgumentType::get(context, "recipe")?;
+            let recipe_str = if self.all {
+                "*"
+            } else {
+                StringArgumentType::get(context, "recipe")?
+            };
 
             let server = context.source.server.as_ref().ok_or_else(|| {
                 ERROR_RECIPE_NOT_FOUND
@@ -234,20 +246,24 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
         .requires(PERMISSION)
         .then(
             literal("give").then(
-                argument("targets", EntityArgumentType::Players).then(
-                    argument("recipe", StringArgumentType::SingleWord)
-                        .suggests(RecipeSuggestionProvider)
-                        .executes(RecipeGiveExecutor),
-                ),
+                argument("targets", EntityArgumentType::Players)
+                    .then(literal("*").executes(RecipeGiveExecutor { all: true }))
+                    .then(
+                        argument("recipe", StringArgumentType::SingleWord)
+                            .suggests(RecipeSuggestionProvider)
+                            .executes(RecipeGiveExecutor { all: false }),
+                    ),
             ),
         )
         .then(
             literal("take").then(
-                argument("targets", EntityArgumentType::Players).then(
-                    argument("recipe", StringArgumentType::SingleWord)
-                        .suggests(RecipeSuggestionProvider)
-                        .executes(RecipeTakeExecutor),
-                ),
+                argument("targets", EntityArgumentType::Players)
+                    .then(literal("*").executes(RecipeTakeExecutor { all: true }))
+                    .then(
+                        argument("recipe", StringArgumentType::SingleWord)
+                            .suggests(RecipeSuggestionProvider)
+                            .executes(RecipeTakeExecutor { all: false }),
+                    ),
             ),
         );
 
