@@ -236,6 +236,22 @@ impl ProtoChunk {
         }
     }
 
+    /// Takes a snapshot of generated structure-piece bounds needed by location predicates.
+    #[must_use]
+    pub fn structure_piece_boxes(&self) -> FxHashMap<StructureKeys, Vec<BlockBox>> {
+        self.structure_starts
+            .iter()
+            .filter_map(|(key, instance)| {
+                let collector = match instance {
+                    StructureInstance::Start(position) => &position.collector,
+                    StructureInstance::Reference(collector) => collector,
+                };
+                let boxes = collector.lock().unwrap().piece_bounding_boxes();
+                (!boxes.is_empty()).then_some((*key, boxes))
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn from_chunk_data(
         chunk_data: &ChunkData,

@@ -276,6 +276,7 @@ impl Chunk {
                 light_populated: AtomicBool::new(false),
                 status: ChunkStatus::Empty,
                 blending_data: None,
+                structure_boxes: FxHashMap::default(),
                 dirty: AtomicBool::new(false),
                 inhabited_time: AtomicU64::new(0),
             })),
@@ -288,6 +289,7 @@ impl Chunk {
 
         let sections = Self::build_level_sections(&proto_chunk, dimension);
         let heightmaps = Self::build_level_heightmaps(&proto_chunk, dimension.min_y);
+        let structure_boxes = proto_chunk.structure_piece_boxes();
 
         // Move the light data instead of cloning it
         // By taking ownership of proto_chunk, we can move the light data directly
@@ -323,6 +325,7 @@ impl Chunk {
             pending_block_entities: Mutex::new(pending_block_entities),
             status: proto_chunk.stage.into(),
             blending_data: proto_chunk.blending_data,
+            structure_boxes,
             inhabited_time: AtomicU64::new(0),
         };
 

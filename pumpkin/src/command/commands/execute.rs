@@ -47,6 +47,10 @@ const PERMISSION: &str = "minecraft:command.execute";
 
 static ERROR_INVALID_DIMENSION: CommandErrorType<1> =
     CommandErrorType::new("argument.dimension.invalid", "argument.dimension.invalid");
+static ERROR_UNKNOWN_PREDICATE: CommandErrorType<1> = CommandErrorType::new(
+    translation::java::PREDICATE_UNKNOWN,
+    translation::java::PREDICATE_UNKNOWN,
+);
 
 const OBJECTIVE_NOT_FOUND_ERROR: CommandErrorType<0> = CommandErrorType::new(
     translation::java::ARGUMENTS_OBJECTIVE_NOTFOUND,
@@ -70,6 +74,7 @@ const ITEM_SLOTS: &str = "itemSlots";
 const ITEM_PREDICATE: &str = "itemPredicate";
 const BIOME_POS: &str = "biomePos";
 const BIOME_PREDICATE: &str = "biomePredicate";
+const LOOT_PREDICATE: &str = "lootPredicate";
 
 struct ExecuteRunExecutor;
 
@@ -706,6 +711,42 @@ fn biome_condition(negated: bool) -> crate::command::argument_builder::LiteralAr
     )
 }
 
+fn execute_predicate_condition_modifier<'a>(
+    context: &'a CommandContext,
+    negated: bool,
+) -> crate::command::node::RedirectModifierResult<'a> {
+    Box::pin(async move {
+        let id = context.get_argument::<Identifier>(LOOT_PREDICATE)?;
+        let Some(matches) = context
+            .server()
+            .data_pack_manager
+            .predicate_matches(id, &context.source)
+        else {
+            return Err(
+                ERROR_UNKNOWN_PREDICATE.create_without_context(TextComponent::text(id.to_string()))
+            );
+        };
+        if matches == negated {
+            Ok(vec![])
+        } else {
+            Ok(vec![context.source.clone()])
+        }
+    })
+}
+
+fn predicate_condition_redirect(negated: bool) -> RedirectModifier {
+    RedirectModifier::Custom(Arc::new(move |context| {
+        execute_predicate_condition_modifier(context, negated)
+    }))
+}
+
+fn predicate_condition(negated: bool) -> crate::command::argument_builder::LiteralArgumentBuilder {
+    literal("predicate").then(
+        argument(LOOT_PREDICATE, IdentifierArgumentType)
+            .redirect_with_modifier(Redirection::Root, predicate_condition_redirect(negated)),
+    )
+}
+
 struct StoreScoreCallback {
     world: Arc<World>,
     targets: Vec<String>,
@@ -1065,7 +1106,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                 .then(score_condition(false))
                 .then(stopwatch_condition(false))
                 .then(items_condition(false))
-                .then(biome_condition(false)),
+                .then(biome_condition(false))
+                .then(predicate_condition(false)),
         )
         .then(
             literal("unless")
@@ -1104,7 +1146,8 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &mut PermissionReg
                 .then(score_condition(true))
                 .then(stopwatch_condition(true))
                 .then(items_condition(true))
-                .then(biome_condition(true)),
+                .then(biome_condition(true))
+                .then(predicate_condition(true)),
         )
         .then(
             literal("store")

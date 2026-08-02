@@ -637,6 +637,15 @@ impl StructurePiecesCollector {
         bbox
     }
 
+    /// Returns the bounding box of every piece in this structure.
+    #[must_use]
+    pub fn piece_bounding_boxes(&self) -> Vec<BlockBox> {
+        self.pieces
+            .iter()
+            .map(|piece| piece.bounding_box())
+            .collect()
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pieces.is_empty()

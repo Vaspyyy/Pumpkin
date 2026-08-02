@@ -2,10 +2,13 @@ use crate::command::CommandSender;
 use crate::command::context::command_source::CommandSource;
 use crate::command::node::dispatcher::UnifiedCommandError;
 use crate::server::Server;
+use crate::world::World;
 use pumpkin_data::biome::Biome;
 use pumpkin_data::entity::EntityType;
+use pumpkin_data::structures::StructureKeys;
 use pumpkin_data::tag::{RegistryKey, get_registry_key_tags};
 use pumpkin_util::identifier::Identifier;
+use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use pumpkin_util::version::JavaMinecraftVersion;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
@@ -61,6 +64,7 @@ pub struct DataPackManager {
     tags: FxHashMap<Identifier, Vec<TagEntry>>,
     entity_type_tags: FxHashMap<Identifier, Vec<EntityTypeTagEntry>>,
     biome_tags: FxHashMap<Identifier, Vec<BiomeTagEntry>>,
+    predicates: FxHashMap<Identifier, LootPredicate>,
     load_functions: Arc<[Identifier]>,
     tick_functions: Arc<[Identifier]>,
     loaded_packs: Arc<[String]>,
@@ -74,6 +78,7 @@ impl Default for DataPackManager {
             tags: FxHashMap::default(),
             entity_type_tags: vanilla_entity_type_tags(),
             biome_tags: vanilla_biome_tags(),
+            predicates: FxHashMap::default(),
             load_functions: Arc::from([]),
             tick_functions: Arc::from([]),
             loaded_packs: Arc::from([]),
@@ -99,6 +104,82 @@ enum EntityTypeTagEntry {
 enum BiomeTagEntry {
     Biome(u8),
     Tag { id: Identifier, required: bool },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "condition")]
+enum LootPredicate {
+    #[serde(rename = "minecraft:all_of")]
+    AllOf { terms: Vec<Self> },
+    #[serde(rename = "minecraft:any_of")]
+    AnyOf { terms: Vec<Self> },
+    #[serde(rename = "minecraft:inverted")]
+    Inverted { term: Box<Self> },
+    #[serde(rename = "minecraft:location_check")]
+    LocationCheck {
+        #[serde(default, rename = "offsetX")]
+        offset_x: i32,
+        #[serde(default, rename = "offsetY")]
+        offset_y: i32,
+        #[serde(default, rename = "offsetZ")]
+        offset_z: i32,
+        predicate: LocationPredicate,
+    },
+    #[serde(rename = "minecraft:entity_properties")]
+    EntityProperties {
+        entity: String,
+        predicate: EntityPredicate,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EntityPredicate {
+    #[serde(default, alias = "minecraft:location")]
+    location: Option<LocationPredicate>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct LocationPredicate {
+    #[serde(default)]
+    position: Option<PositionPredicate>,
+    #[serde(default)]
+    dimension: Option<String>,
+    #[serde(default)]
+    can_see_sky: Option<bool>,
+    #[serde(default)]
+    structures: Vec<String>,
+    #[serde(default)]
+    block: Option<BlockPredicate>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PositionPredicate {
+    #[serde(default)]
+    x: Option<NumberRange>,
+    #[serde(default)]
+    y: Option<NumberRange>,
+    #[serde(default)]
+    z: Option<NumberRange>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct NumberRange {
+    #[serde(default)]
+    min: Option<f64>,
+    #[serde(default)]
+    max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BlockPredicate {
+    blocks: StringOrList,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StringOrList {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[derive(Debug)]
@@ -184,6 +265,118 @@ fn vanilla_biome_tags() -> FxHashMap<Identifier, Vec<BiomeTagEntry>> {
     tags
 }
 
+impl LootPredicate {
+    fn test(&self, source: &CommandSource) -> bool {
+        match self {
+            Self::AllOf { terms } => terms.iter().all(|term| term.test(source)),
+            Self::AnyOf { terms } => terms.iter().any(|term| term.test(source)),
+            Self::Inverted { term } => !term.test(source),
+            Self::LocationCheck {
+                offset_x,
+                offset_y,
+                offset_z,
+                predicate,
+            } => source.world.as_ref().is_some_and(|world| {
+                let position = Vector3::new(
+                    source.position.x + f64::from(*offset_x),
+                    source.position.y + f64::from(*offset_y),
+                    source.position.z + f64::from(*offset_z),
+                );
+                predicate.test(world, position)
+            }),
+            Self::EntityProperties { entity, predicate } => {
+                if entity != "this" {
+                    return false;
+                }
+                source.entity.as_ref().is_some_and(|entity| {
+                    let entity = entity.get_entity();
+                    predicate.test(&entity.world.load(), entity.pos.load())
+                })
+            }
+        }
+    }
+}
+
+impl EntityPredicate {
+    fn test(&self, world: &World, position: Vector3<f64>) -> bool {
+        self.location
+            .as_ref()
+            .is_none_or(|location| location.test(world, position))
+    }
+}
+
+impl LocationPredicate {
+    fn test(&self, world: &World, position: Vector3<f64>) -> bool {
+        if self
+            .position
+            .as_ref()
+            .is_some_and(|predicate| !predicate.test(position))
+        {
+            return false;
+        }
+        if self
+            .dimension
+            .as_ref()
+            .is_some_and(|dimension| dimension != world.dimension.minecraft_name)
+        {
+            return false;
+        }
+
+        let block_pos = BlockPos(position.floor_to_i32());
+        if self
+            .can_see_sky
+            .is_some_and(|expected| world.can_see_sky(&block_pos) != expected)
+        {
+            return false;
+        }
+        if !self.structures.is_empty() {
+            let structures = self
+                .structures
+                .iter()
+                .filter_map(|structure| StructureKeys::from_name(structure))
+                .collect::<Vec<_>>();
+            if structures.is_empty() || !world.is_in_structure(&block_pos, &structures) {
+                return false;
+            }
+        }
+        if self
+            .block
+            .as_ref()
+            .is_some_and(|predicate| !predicate.test(world.get_block(&block_pos).name))
+        {
+            return false;
+        }
+        true
+    }
+}
+
+impl PositionPredicate {
+    fn test(&self, position: Vector3<f64>) -> bool {
+        self.x.as_ref().is_none_or(|range| range.test(position.x))
+            && self.y.as_ref().is_none_or(|range| range.test(position.y))
+            && self.z.as_ref().is_none_or(|range| range.test(position.z))
+    }
+}
+
+impl NumberRange {
+    fn test(&self, value: f64) -> bool {
+        self.min.is_none_or(|min| value >= min) && self.max.is_none_or(|max| value <= max)
+    }
+}
+
+impl BlockPredicate {
+    fn test(&self, block_name: &str) -> bool {
+        let matches = |id: &str| {
+            Identifier::parse(id)
+                .is_ok_and(|id| id.namespace() == "minecraft" && id.path() == block_name)
+        };
+        match &self.blocks {
+            StringOrList::One(id) => matches(id),
+            StringOrList::Many(ids) => ids.iter().any(|id| matches(id)),
+        }
+    }
+}
+
 impl DataPackManager {
     /// Loads every folder and ZIP data pack found in `<world>/datapacks`.
     ///
@@ -256,6 +449,14 @@ impl DataPackManager {
 
     pub fn function_ids(&self) -> impl Iterator<Item = &Identifier> {
         self.functions.keys()
+    }
+
+    /// Evaluates a loaded data-pack predicate against the current command source.
+    #[must_use]
+    pub fn predicate_matches(&self, id: &Identifier, source: &CommandSource) -> Option<bool> {
+        self.predicates
+            .get(id)
+            .map(|predicate| predicate.test(source))
     }
 
     /// Returns whether an entity type belongs to a vanilla or data-pack-defined
@@ -571,6 +772,19 @@ impl DataPackManager {
                     }
                     Err(error) => warn!(
                         "Ignoring invalid function {id} in data pack {}: {error}",
+                        pack.name
+                    ),
+                }
+                continue;
+            }
+
+            if let Some(id) = predicate_id_from_path(&file.path) {
+                match serde_json::from_slice::<LootPredicate>(&file.contents) {
+                    Ok(predicate) => {
+                        self.predicates.insert(id, predicate);
+                    }
+                    Err(error) => warn!(
+                        "Ignoring invalid predicate {id} in data pack {}: {error}",
                         pack.name
                     ),
                 }
@@ -904,6 +1118,8 @@ fn is_relevant_data_file(path: &str) -> bool {
     let extension = Path::new(&path).extension();
     path.starts_with("data/")
         && (extension.is_some_and(|extension| extension.eq_ignore_ascii_case("mcfunction"))
+            || (path.contains("/predicate/")
+                && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
             || (path.contains("/tags/function/")
                 && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
             || (path.contains("/tags/entity_type/")
@@ -914,6 +1130,10 @@ fn is_relevant_data_file(path: &str) -> bool {
 
 fn function_id_from_path(path: &str) -> Option<Identifier> {
     resource_id_from_path(path, "function", ".mcfunction")
+}
+
+fn predicate_id_from_path(path: &str) -> Option<Identifier> {
+    resource_id_from_path(path, "predicate", ".json")
 }
 
 fn function_tag_id_from_path(path: &str) -> Option<Identifier> {
@@ -1087,6 +1307,47 @@ mod tests {
 
         assert!(manager.biome_is_tagged(&frozen, &Biome::FROZEN_RIVER));
         assert!(!manager.biome_is_tagged(&frozen, &Biome::PLAINS));
+    }
+
+    #[test]
+    fn loads_matcha_style_predicates() {
+        let temp = tempdir().unwrap();
+        let pack = temp.path().join("datapacks/test");
+        let predicates = pack.join("data/main/predicate");
+        fs::create_dir_all(&predicates).unwrap();
+        fs::write(pack.join("pack.mcmeta"), metadata()).unwrap();
+        fs::write(
+            predicates.join("surface_spawn.json"),
+            r#"{
+                "condition":"minecraft:any_of",
+                "terms":[
+                    {"condition":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:location":{"can_see_sky":true}}},
+                    {"condition":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:location":{"position":{"y":{"min":63,"max":350}}}}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            predicates.join("not_in_village.json"),
+            r#"{
+                "condition":"minecraft:inverted",
+                "term":{"condition":"minecraft:location_check","offsetY":-1,"predicate":{"structures":["minecraft:village_plains"],"block":{"blocks":"minecraft:oak_planks"}}}
+            }"#,
+        )
+        .unwrap();
+
+        let manager = DataPackManager::load(temp.path());
+
+        assert!(
+            manager
+                .predicates
+                .contains_key(&Identifier::parse_static("main:surface_spawn"))
+        );
+        assert!(
+            manager
+                .predicates
+                .contains_key(&Identifier::parse_static("main:not_in_village"))
+        );
     }
 
     #[test]

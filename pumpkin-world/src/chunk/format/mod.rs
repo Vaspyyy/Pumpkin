@@ -9,7 +9,9 @@ use std::{
 };
 
 use bytes::Bytes;
-use pumpkin_data::{Block, BlockStateId, chunk::ChunkStatus, fluid::Fluid};
+use pumpkin_data::{
+    Block, BlockStateId, chunk::ChunkStatus, fluid::Fluid, structures::StructureKeys,
+};
 use pumpkin_nbt::{compound::NbtCompound, nbt_long_array};
 use pumpkin_util::resource_location::{FromResourceLocation, ResourceLocation, ToResourceLocation};
 use rustc_hash::FxHashMap;
@@ -25,8 +27,8 @@ use crate::{
     level::LevelFolder,
     tick::{ScheduledTick, TickPriority, scheduler::ChunkTickScheduler},
 };
-use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector2::Vector2;
+use pumpkin_util::math::{block_box::BlockBox, position::BlockPos};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -150,6 +152,101 @@ where
         position: BlockPos::new(x, y, z),
         value,
     })
+}
+
+const PUMPKIN_STRUCTURE_BOXES: &str = "PumpkinStructureBoxes";
+
+fn parse_structure_boxes(root: &NbtCompound) -> FxHashMap<StructureKeys, Vec<BlockBox>> {
+    let mut structures = FxHashMap::default();
+    let Some(entries) = root.get_list(PUMPKIN_STRUCTURE_BOXES) else {
+        return structures;
+    };
+    for entry in entries {
+        let pumpkin_nbt::tag::NbtTag::Compound(entry) = entry else {
+            continue;
+        };
+        let Some(key) = entry.get_string("id").and_then(StructureKeys::from_name) else {
+            continue;
+        };
+        let Some(boxes) = entry.get_list("boxes") else {
+            continue;
+        };
+        let boxes = boxes
+            .iter()
+            .filter_map(|bounds| {
+                let pumpkin_nbt::tag::NbtTag::IntArray(bounds) = bounds else {
+                    return None;
+                };
+                let &[min_x, min_y, min_z, max_x, max_y, max_z] = bounds.as_slice() else {
+                    return None;
+                };
+                Some(BlockBox::new(min_x, min_y, min_z, max_x, max_y, max_z))
+            })
+            .collect::<Vec<_>>();
+        if !boxes.is_empty() {
+            structures.insert(key, boxes);
+        }
+    }
+    structures
+}
+
+fn write_structure_boxes(
+    root: &mut NbtCompound,
+    structures: &FxHashMap<StructureKeys, Vec<BlockBox>>,
+) {
+    use pumpkin_nbt::tag::NbtTag;
+
+    let entries = structures
+        .iter()
+        .filter_map(|(key, boxes)| {
+            if boxes.is_empty() {
+                return None;
+            }
+            let mut entry = NbtCompound::new();
+            entry.put_string("id", key.to_name().to_string());
+            entry.put_list(
+                "boxes",
+                boxes
+                    .iter()
+                    .map(|bounds| {
+                        NbtTag::IntArray(vec![
+                            bounds.min.x,
+                            bounds.min.y,
+                            bounds.min.z,
+                            bounds.max.x,
+                            bounds.max.y,
+                            bounds.max.z,
+                        ])
+                    })
+                    .collect(),
+            );
+            Some(NbtTag::Compound(entry))
+        })
+        .collect();
+    root.put_list(PUMPKIN_STRUCTURE_BOXES, entries);
+}
+
+#[cfg(test)]
+mod structure_box_tests {
+    use super::*;
+    use pumpkin_util::math::vector3::Vector3;
+
+    #[test]
+    fn structure_boxes_round_trip_through_nbt() {
+        let mut structures = FxHashMap::default();
+        structures.insert(
+            StructureKeys::TrialChambers,
+            vec![BlockBox::new(-8, -20, 12, 24, 40, 36)],
+        );
+        let mut root = NbtCompound::new();
+
+        write_structure_boxes(&mut root, &structures);
+        let parsed = parse_structure_boxes(&root);
+        let bounds = &parsed[&StructureKeys::TrialChambers][0];
+
+        assert_eq!(bounds.min, Vector3::new(-8, -20, 12));
+        assert_eq!(bounds.max, Vector3::new(24, 40, 36));
+    }
 }
 
 impl ChunkData {
@@ -350,6 +447,7 @@ impl ChunkData {
         }
 
         let light_correct = root_tag.get_bool("isLightOn").unwrap_or(false);
+        let structure_boxes = parse_structure_boxes(&root_tag);
 
         let status_str = root_tag.get_string("Status").unwrap_or("minecraft:empty");
         let status = match status_str {
@@ -381,6 +479,7 @@ impl ChunkData {
             light_populated: AtomicBool::new(light_correct),
             status,
             blending_data: None,
+            structure_boxes,
             inhabited_time: AtomicU64::new(root_tag.get_long("InhabitedTime").unwrap_or(0) as u64),
         })
     }
@@ -533,6 +632,7 @@ impl ChunkData {
             "InhabitedTime",
             self.inhabited_time.load(Ordering::Relaxed) as i64,
         );
+        write_structure_boxes(&mut root_compound, &self.structure_boxes);
 
         let mut result = Vec::new();
         pumpkin_nbt::serializer::to_bytes(&root_compound, &mut result)

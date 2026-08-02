@@ -4,11 +4,12 @@ use palette::{BiomePalette, BlockPalette, has_random_ticking_fluid};
 use pumpkin_data::block_properties::{blocks_movement, has_random_ticks, is_air};
 use pumpkin_data::chunk::ChunkStatus;
 use pumpkin_data::fluid::Fluid;
+use pumpkin_data::structures::StructureKeys;
 use pumpkin_data::tag::Block::MINECRAFT_LEAVES;
 use pumpkin_data::{Block, BlockState, BlockStateId};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::nbt_long_array;
-use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::{block_box::BlockBox, position::BlockPos};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
@@ -81,6 +82,8 @@ pub struct ChunkData {
     pub light_populated: AtomicBool,
     pub status: ChunkStatus,
     pub blending_data: Option<crate::generation::blender::blending_data::BlendingData>,
+    /// Generated structure pieces intersecting this chunk, grouped by structure type.
+    pub structure_boxes: FxHashMap<StructureKeys, Vec<BlockBox>>,
     pub dirty: AtomicBool,
     pub inhabited_time: AtomicU64,
 }

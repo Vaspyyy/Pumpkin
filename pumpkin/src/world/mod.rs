@@ -62,6 +62,7 @@ use pumpkin_data::dimension::Dimension;
 use pumpkin_data::entity::MobCategory;
 use pumpkin_data::fluid::{Falling, FluidProperties, FluidState};
 use pumpkin_data::meta_data_type::MetaDataType;
+use pumpkin_data::structures::StructureKeys;
 use pumpkin_data::tracked_data::TrackedData;
 use pumpkin_data::{
     Block, BlockStateId,
@@ -4509,7 +4510,24 @@ impl World {
     pub fn can_see_sky(&self, position: &BlockPos) -> bool {
         position.0.y >= self.dimension.min_y
             && position.0.y < self.dimension.min_y + self.dimension.height
-            && self.get_sky_light_level(position) >= MAX_LIGHT_LEVEL
+            && (self.get_sky_light_level(position) >= MAX_LIGHT_LEVEL
+                || position.0.y
+                    > self.get_heightmap_height(MotionBlocking, position.0.x, position.0.z))
+    }
+
+    /// Returns whether the position lies inside a generated piece of one of the structures.
+    #[must_use]
+    pub fn is_in_structure(&self, position: &BlockPos, structures: &[StructureKeys]) -> bool {
+        let chunk_pos = position.chunk_position();
+        self.level
+            .read_chunk_sync(&chunk_pos, |chunk| {
+                structures.iter().any(|structure| {
+                    chunk.structure_boxes.get(structure).is_some_and(|boxes| {
+                        boxes.iter().any(|bounds| bounds.contains_pos(&position.0))
+                    })
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub fn set_block_light_level(&self, position: &BlockPos, light_level: u8) {
