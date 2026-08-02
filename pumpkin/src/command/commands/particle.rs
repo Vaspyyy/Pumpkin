@@ -4,7 +4,10 @@ use crate::command::{
         ConsumedArgs, FindArg, bounded_num::BoundedNumArgumentConsumer,
         position_3d::Position3DArgumentConsumer, resource::particle::ParticleArgumentConsumer,
     },
-    tree::{CommandTree, builder::argument},
+    tree::{
+        CommandTree,
+        builder::{argument, literal},
+    },
 };
 use pumpkin_util::{math::vector3::Vector3, text::TextComponent};
 const NAMES: [&str; 1] = ["particle"];
@@ -18,7 +21,15 @@ const ARG_DELTA: &str = "delta";
 const ARG_SPEED: &str = "speed";
 const ARG_COUNT: &str = "count";
 
-struct Executor;
+#[derive(Clone, Copy)]
+struct Executor {
+    force: bool,
+}
+
+impl Executor {
+    const NORMAL: Self = Self { force: false };
+    const FORCE: Self = Self { force: true };
+}
 
 impl CommandExecutor for Executor {
     fn execute<'a>(
@@ -50,14 +61,23 @@ impl CommandExecutor for Executor {
                 )
             });
 
-            world.spawn_particle(pos, delta, speed, count, *particle);
+            world.spawn_particle_with_data(
+                pos,
+                delta,
+                speed,
+                count,
+                particle.particle,
+                self.force,
+                self.force,
+                &particle.data,
+            );
 
             sender
                 .send_message(TextComponent::translate_cross(
                     pumpkin_data::translation::java::COMMANDS_PARTICLE_SUCCESS,
                     pumpkin_data::translation::bedrock::COMMANDS_PARTICLE_SUCCESS,
                     [
-                        TextComponent::text(format!("{particle:?}")),
+                        TextComponent::text(format!("{:?}", particle.particle)),
                         TextComponent::text(count.to_string()),
                     ],
                 ))
@@ -72,25 +92,27 @@ impl CommandExecutor for Executor {
 pub fn init_command_tree() -> CommandTree {
     CommandTree::new(NAMES, DESCRIPTION).then(
         argument(ARG_NAME, ParticleArgumentConsumer)
-            .execute(Executor)
+            .execute(Executor::NORMAL)
             .then(
                 argument(ARG_POS, Position3DArgumentConsumer)
-                    .execute(Executor)
+                    .execute(Executor::NORMAL)
                     .then(
                         argument(ARG_DELTA, Position3DArgumentConsumer)
-                            .execute(Executor)
+                            .execute(Executor::NORMAL)
                             .then(
                                 argument(
                                     ARG_SPEED,
                                     BoundedNumArgumentConsumer::<f32>::new().min(0.0),
                                 )
-                                .execute(Executor)
+                                .execute(Executor::NORMAL)
                                 .then(
                                     argument(
                                         ARG_COUNT,
                                         BoundedNumArgumentConsumer::<i32>::new().min(0),
                                     )
-                                    .execute(Executor),
+                                    .execute(Executor::NORMAL)
+                                    .then(literal("normal").execute(Executor::NORMAL))
+                                    .then(literal("force").execute(Executor::FORCE)),
                                 ),
                             ),
                     ),

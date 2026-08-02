@@ -753,8 +753,41 @@ impl World {
         particle_count: i32,
         particle: Particle,
     ) {
+        self.spawn_particle_with_data(
+            position,
+            offset,
+            max_speed,
+            particle_count,
+            particle,
+            false,
+            false,
+            &[],
+        );
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub fn spawn_particle_with_data(
+        &self,
+        position: Vector3<f64>,
+        offset: Vector3<f32>,
+        max_speed: f32,
+        particle_count: i32,
+        particle: Particle,
+        force_spawn: bool,
+        important: bool,
+        data: &[u8],
+    ) {
         for player in self.players.load().iter() {
-            player.spawn_particle(position, offset, max_speed, particle_count, particle);
+            player.spawn_particle_with_data(
+                position,
+                offset,
+                max_speed,
+                particle_count,
+                particle,
+                force_spawn,
+                important,
+                data,
+            );
         }
     }
 
