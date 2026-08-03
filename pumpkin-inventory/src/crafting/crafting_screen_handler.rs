@@ -52,8 +52,7 @@ pub struct ResultSlot {
 }
 
 pub struct RecipeResult {
-    pub item_id: String,
-    pub count: u8,
+    pub item_stack: ItemStack,
 }
 
 /// Checks if a recipe pattern is symmetrical horizontally.
@@ -165,9 +164,8 @@ async fn recipe_matches(
                 }
             }
 
-            matched.then_some(RecipeResult {
-                item_id: result.id.to_string(),
-                count: result.count,
+            matched.then(|| RecipeResult {
+                item_stack: ItemStack::from(result),
             })
         }
         GenericRecipe::Vanilla(CraftingRecipeTypes::CraftingShapeless {
@@ -194,8 +192,7 @@ async fn recipe_matches(
                 return None;
             }
             Some(RecipeResult {
-                item_id: result.id.to_string(),
-                count: result.count,
+                item_stack: ItemStack::from(result),
             })
         }
         GenericRecipe::Vanilla(CraftingRecipeTypes::CraftingTransmute {
@@ -218,8 +215,7 @@ async fn recipe_matches(
                 }
             }
             Some(RecipeResult {
-                item_id: result.id.to_string(),
-                count: result.count,
+                item_stack: ItemStack::from(result),
             })
         }
         GenericRecipe::Vanilla(CraftingRecipeTypes::CraftingDecoratedPot { .. }) => {
@@ -238,8 +234,7 @@ async fn recipe_matches(
                 }
             }
             Some(RecipeResult {
-                item_id: "minecraft:decorated_pot".to_string(),
-                count: 1,
+                item_stack: ItemStack::new(1, &pumpkin_data::item::Item::DECORATED_POT),
             })
         }
         GenericRecipe::Dynamic(OwnedCraftingRecipe::Shaped {
@@ -248,7 +243,9 @@ async fn recipe_matches(
             result,
             ..
         }) => {
-            if pattern.len() != input_height || pattern.first().unwrap().len() != input_width {
+            if pattern.len() != input_height
+                || pattern.first().unwrap().chars().count() != input_width
+            {
                 return None;
             }
             if count
@@ -286,9 +283,38 @@ async fn recipe_matches(
                     }
                 }
             }
-            matched.then_some(RecipeResult {
-                item_id: result.item_id.clone(),
-                count: result.count,
+            if !matched
+                && !is_symmetrical_horizontally(
+                    &pattern.iter().map(String::as_str).collect::<Vec<_>>(),
+                )
+            {
+                matched = true;
+                'outer: for (y, row_str) in pattern.iter().enumerate() {
+                    for (x, current_key) in row_str.chars().rev().enumerate() {
+                        let slot = inventory
+                            .get_stack((y + y_offset) * inventory.get_width() + (x + x_offset))
+                            .await;
+                        if current_key == ' ' {
+                            if !slot.lock().await.is_empty() {
+                                matched = false;
+                                break 'outer;
+                            }
+                            continue;
+                        }
+                        let ingredient = key
+                            .iter()
+                            .find(|(key, _)| *key == current_key)
+                            .map(|(_, ingredient)| ingredient)
+                            .expect("Crafting recipe used invalid key");
+                        if !ingredient.match_item(slot.lock().await.item) {
+                            matched = false;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+            matched.then(|| RecipeResult {
+                item_stack: result.item_stack.clone(),
             })
         }
         GenericRecipe::Dynamic(OwnedCraftingRecipe::Shapeless {
@@ -315,8 +341,7 @@ async fn recipe_matches(
                 return None;
             }
             Some(RecipeResult {
-                item_id: result.item_id.clone(),
-                count: result.count,
+                item_stack: result.item_stack.clone(),
             })
         }
         _ => None,
@@ -362,22 +387,6 @@ impl ResultSlot {
         let input_width = bottom_x + 1 - top_x;
         let input_height = bottom_y + 1 - top_y;
 
-        for recipe in RECIPES_CRAFTING {
-            if let Some(result) = recipe_matches(
-                GenericRecipe::Vanilla(recipe),
-                input_height,
-                input_width,
-                top_x,
-                top_y,
-                count,
-                &*self.inventory,
-            )
-            .await
-            {
-                return Some(result);
-            }
-        }
-
         if let Some(provider) = &self.recipe_provider {
             let dynamic = provider.get_dynamic_recipes().await;
             for recipe in &dynamic {
@@ -397,18 +406,28 @@ impl ResultSlot {
                 }
             }
         }
+
+        for recipe in RECIPES_CRAFTING {
+            if let Some(result) = recipe_matches(
+                GenericRecipe::Vanilla(recipe),
+                input_height,
+                input_width,
+                top_x,
+                top_y,
+                count,
+                &*self.inventory,
+            )
+            .await
+            {
+                return Some(result);
+            }
+        }
         None
     }
 
     async fn refill_output(&self) -> ItemStack {
         let result = if let Some(matched) = self.match_recipe().await {
-            let key = matched
-                .item_id
-                .strip_prefix("minecraft:")
-                .unwrap_or(&matched.item_id);
-            let item = pumpkin_data::item::Item::from_registry_key(key)
-                .unwrap_or(&pumpkin_data::item::Item::AIR);
-            ItemStack::new(matched.count, item)
+            matched.item_stack
         } else {
             ItemStack::EMPTY.clone()
         };

@@ -26,10 +26,10 @@ static ERROR_RECIPE_NOT_FOUND: CommandErrorType<1> =
 fn get_recipe_id(recipe: &DynamicRecipe) -> String {
     match recipe {
         DynamicRecipe::Crafting(crafting) => match crafting {
-            pumpkin_protocol::codec::recipe::OwnedCraftingRecipe::Shaped { result, .. }
-            | pumpkin_protocol::codec::recipe::OwnedCraftingRecipe::Shapeless { result, .. } => {
-                result.item_id.clone()
-            }
+            pumpkin_protocol::codec::recipe::OwnedCraftingRecipe::Shaped { recipe_id, .. }
+            | pumpkin_protocol::codec::recipe::OwnedCraftingRecipe::Shapeless {
+                recipe_id, ..
+            } => recipe_id.clone(),
         },
         DynamicRecipe::Cooking(cooking) => match cooking {
             pumpkin_protocol::codec::recipe::OwnedCookingRecipeType::Smelting(r)

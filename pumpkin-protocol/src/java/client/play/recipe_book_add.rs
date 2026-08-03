@@ -6,6 +6,7 @@ use pumpkin_data::recipes::{
     CookingRecipeType, CraftingRecipeTypes, RECIPES_COOKING, RECIPES_CRAFTING, RecipeCategoryTypes,
     RecipeIngredientTypes, RecipeResultStruct,
 };
+use pumpkin_data::tag::Taggable;
 use pumpkin_macros::java_packet;
 use pumpkin_util::version::JavaMinecraftVersion;
 use std::borrow::Cow;
@@ -116,6 +117,15 @@ fn write_item_stack_slot_display(
         .ok_or_else(|| WritingError::Message(format!("item id {} must exist", item.id)))?;
     ItemStackTemplateSerializer::from(ItemStack::new(count, static_item))
         .write_with_version(write, &version)
+}
+
+fn write_owned_item_stack_slot_display(
+    write: &mut impl Write,
+    stack: &ItemStack,
+    version: JavaMinecraftVersion,
+) -> Result<(), WritingError> {
+    write.write_var_int(&VarInt(slot_display_item_stack_type(version)))?;
+    ItemStackTemplateSerializer::from(stack.clone()).write_with_version(write, &version)
 }
 
 fn write_empty_slot_display(write: &mut impl Write) -> Result<(), WritingError> {
@@ -694,8 +704,26 @@ fn write_dynamic_ingredient_slot_display(
                 write_empty_slot_display(write)?;
             }
         }
-        crate::codec::recipe::OwnedRecipeIngredient::Tagged(_tag) => {
-            write_empty_slot_display(write)?;
+        crate::codec::recipe::OwnedRecipeIngredient::Tagged(tag) => {
+            let items = Item::get_tag_values(tag)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|id| {
+                    let key = id.strip_prefix("minecraft:").unwrap_or(id);
+                    Item::from_registry_key(key)
+                })
+                .collect::<Vec<_>>();
+            if items.is_empty() {
+                write_empty_slot_display(write)?;
+            } else if items.len() == 1 {
+                write_item_slot_display(write, items[0], version)?;
+            } else {
+                write.write_var_int(&VarInt(slot_display_composite_type(version)))?;
+                write.write_var_int(&VarInt(items.len() as i32))?;
+                for item in items {
+                    write_item_slot_display(write, item, version)?;
+                }
+            }
         }
         crate::codec::recipe::OwnedRecipeIngredient::OneOf(ids) => {
             let items: Vec<&Item> = ids
@@ -740,8 +768,9 @@ fn write_dynamic_ingredient_holderset(
                 write.write_var_int(&VarInt(1))?;
             }
         }
-        Some(crate::codec::recipe::OwnedRecipeIngredient::Tagged(_tag)) => {
-            write.write_var_int(&VarInt(1))?;
+        Some(crate::codec::recipe::OwnedRecipeIngredient::Tagged(tag)) => {
+            write.write_var_int(&VarInt(0))?;
+            write.write_string(tag)?;
         }
         Some(crate::codec::recipe::OwnedRecipeIngredient::OneOf(ids)) => {
             let items: Vec<i32> = ids
@@ -765,14 +794,10 @@ fn write_dynamic_result_slot_display(
     result: &crate::codec::recipe::OwnedRecipeResult,
     version: JavaMinecraftVersion,
 ) -> Result<(), WritingError> {
-    let key = result
-        .item_id
-        .strip_prefix("minecraft:")
-        .unwrap_or(&result.item_id);
-    if let Some(item) = Item::from_registry_key(key) {
-        write_item_stack_slot_display(write, item, result.count, version)?;
-    } else {
+    if result.item_stack.is_empty() {
         write_empty_slot_display(write)?;
+    } else {
+        write_owned_item_stack_slot_display(write, &result.item_stack, version)?;
     }
     Ok(())
 }
@@ -795,7 +820,7 @@ fn write_dynamic_crafting_entry(
             ..
         } => {
             let height = pattern.len() as i32;
-            let width = pattern.first().map_or(0, String::len) as i32;
+            let width = pattern.first().map_or(0, |row| row.chars().count()) as i32;
 
             write.write_var_int(&VarInt(display_id))?;
             write.write_var_int(&VarInt(RECIPE_DISPLAY_SHAPED))?;

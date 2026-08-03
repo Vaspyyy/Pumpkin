@@ -732,6 +732,7 @@ impl BedrockClient {
                                 .block_registry
                                 .place_block(
                                     player,
+                                    &stack,
                                     placed_block,
                                     &server,
                                     &dummy_use_item_on,

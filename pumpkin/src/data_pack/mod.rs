@@ -1,12 +1,19 @@
+mod advancement;
+mod loot_table;
+mod recipe;
+
 use crate::command::CommandSender;
 use crate::command::context::command_source::CommandSource;
 use crate::command::node::dispatcher::UnifiedCommandError;
 use crate::server::Server;
 use crate::world::World;
+use pumpkin_data::Advancement;
 use pumpkin_data::biome::Biome;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::structures::StructureKeys;
 use pumpkin_data::tag::{RegistryKey, get_registry_key_tags};
+use pumpkin_protocol::codec::recipe::DynamicRecipe;
+use pumpkin_protocol::java::client::play::ClientAdvancement;
 use pumpkin_util::identifier::Identifier;
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use pumpkin_util::version::JavaMinecraftVersion;
@@ -58,13 +65,15 @@ pub struct DataPackFunction {
     pub commands: Arc<[FunctionCommand]>,
 }
 
-#[derive(Debug)]
 pub struct DataPackManager {
     functions: FxHashMap<Identifier, Arc<DataPackFunction>>,
     tags: FxHashMap<Identifier, Vec<TagEntry>>,
     entity_type_tags: FxHashMap<Identifier, Vec<EntityTypeTagEntry>>,
     biome_tags: FxHashMap<Identifier, Vec<BiomeTagEntry>>,
     predicates: FxHashMap<Identifier, LootPredicate>,
+    advancements: FxHashMap<Identifier, ClientAdvancement>,
+    recipes: FxHashMap<Identifier, DynamicRecipe>,
+    block_loot_tables: FxHashMap<String, loot_table::BlockLootTable>,
     load_functions: Arc<[Identifier]>,
     tick_functions: Arc<[Identifier]>,
     loaded_packs: Arc<[String]>,
@@ -79,6 +88,9 @@ impl Default for DataPackManager {
             entity_type_tags: vanilla_entity_type_tags(),
             biome_tags: vanilla_biome_tags(),
             predicates: FxHashMap::default(),
+            advancements: FxHashMap::default(),
+            recipes: FxHashMap::default(),
+            block_loot_tables: FxHashMap::default(),
             load_functions: Arc::from([]),
             tick_functions: Arc::from([]),
             loaded_packs: Arc::from([]),
@@ -564,15 +576,62 @@ impl DataPackManager {
         &self.loaded_packs
     }
 
+    #[must_use]
+    pub fn recipes(&self) -> Vec<DynamicRecipe> {
+        let mut recipes = self.recipes.iter().collect::<Vec<_>>();
+        recipes.sort_by_key(|(id, _)| id.to_string());
+        recipes
+            .into_iter()
+            .map(|(_, recipe)| recipe.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn block_loot_table(
+        &self,
+        block: &pumpkin_data::Block,
+    ) -> Option<&loot_table::BlockLootTable> {
+        self.block_loot_tables.get(block.name)
+    }
+
+    #[must_use]
+    pub fn advancements(&self) -> Vec<ClientAdvancement> {
+        let mut advancements = self.advancements.clone();
+        loop {
+            let missing_parents = advancements
+                .values()
+                .filter_map(|advancement| advancement.parent.as_ref())
+                .filter(|parent| !advancements.contains_key(*parent))
+                .cloned()
+                .collect::<FxHashSet<_>>();
+            let mut added = false;
+            for parent in missing_parents {
+                if parent.namespace() == "minecraft"
+                    && let Some(vanilla) = Advancement::from_name(parent.path())
+                {
+                    advancements.insert(parent, vanilla.into());
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        advancement::layout_and_sort(&advancements)
+    }
+
     pub async fn run_load_functions(&self, server: &Arc<Server>) {
         if self.loaded_packs.is_empty() {
             return;
         }
         info!(
-            "Loaded {} data pack(s), {} function(s), and {} load function(s)",
+            "Loaded {} data pack(s), {} function(s), {} load function(s), {} advancement(s), {} recipe(s), and {} block loot table override(s)",
             self.loaded_packs.len(),
             self.functions.len(),
-            self.load_functions.len()
+            self.load_functions.len(),
+            self.advancements.len(),
+            self.recipes.len(),
+            self.block_loot_tables.len()
         );
         self.run_tag(server, &self.load_functions).await;
     }
@@ -785,6 +844,56 @@ impl DataPackManager {
                     }
                     Err(error) => warn!(
                         "Ignoring invalid predicate {id} in data pack {}: {error}",
+                        pack.name
+                    ),
+                }
+                continue;
+            }
+
+            if let Some(id) = block_loot_table_id_from_path(&file.path) {
+                let Some(block_name) = id.path().strip_prefix("blocks/") else {
+                    continue;
+                };
+                if id.namespace() != "minecraft"
+                    || pumpkin_data::Block::from_registry_key(block_name).is_none()
+                {
+                    continue;
+                }
+                match loot_table::parse_block_loot_table(&file.contents) {
+                    Ok(loot_table) => {
+                        self.block_loot_tables
+                            .insert(block_name.to_string(), loot_table);
+                    }
+                    Err(error) if error.contains("not supported yet") => {}
+                    Err(error) => warn!(
+                        "Ignoring invalid block loot table {id} in data pack {}: {error}",
+                        pack.name
+                    ),
+                }
+                continue;
+            }
+
+            if let Some(id) = recipe_id_from_path(&file.path) {
+                match recipe::parse_recipe(&id, &file.contents) {
+                    Ok(recipe) => {
+                        self.recipes.insert(id, recipe);
+                    }
+                    Err(error) if error.contains("is not supported yet") => {}
+                    Err(error) => warn!(
+                        "Ignoring invalid recipe {id} in data pack {}: {error}",
+                        pack.name
+                    ),
+                }
+                continue;
+            }
+
+            if let Some(id) = advancement_id_from_path(&file.path) {
+                match advancement::parse_advancement(&id, &file.contents) {
+                    Ok(advancement) => {
+                        self.advancements.insert(id, advancement);
+                    }
+                    Err(error) => warn!(
+                        "Ignoring invalid advancement {id} in data pack {}: {error}",
                         pack.name
                     ),
                 }
@@ -1120,6 +1229,12 @@ fn is_relevant_data_file(path: &str) -> bool {
         && (extension.is_some_and(|extension| extension.eq_ignore_ascii_case("mcfunction"))
             || (path.contains("/predicate/")
                 && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
+            || (path.contains("/recipe/")
+                && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
+            || (path.contains("/advancement/")
+                && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
+            || (path.contains("/loot_table/blocks/")
+                && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
             || (path.contains("/tags/function/")
                 && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("json")))
             || (path.contains("/tags/entity_type/")
@@ -1134,6 +1249,18 @@ fn function_id_from_path(path: &str) -> Option<Identifier> {
 
 fn predicate_id_from_path(path: &str) -> Option<Identifier> {
     resource_id_from_path(path, "predicate", ".json")
+}
+
+fn recipe_id_from_path(path: &str) -> Option<Identifier> {
+    resource_id_from_path(path, "recipe", ".json")
+}
+
+fn advancement_id_from_path(path: &str) -> Option<Identifier> {
+    resource_id_from_path(path, "advancement", ".json")
+}
+
+fn block_loot_table_id_from_path(path: &str) -> Option<Identifier> {
+    resource_id_from_path(path, "loot_table", ".json").filter(|id| id.path().starts_with("blocks/"))
 }
 
 fn function_tag_id_from_path(path: &str) -> Option<Identifier> {
@@ -1375,6 +1502,53 @@ mod tests {
                 .function(&Identifier::parse_static("example:zipped"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn loads_zip_recipes_and_advancements() {
+        let temp = tempdir().unwrap();
+        let data_packs = temp.path().join("datapacks");
+        fs::create_dir_all(&data_packs).unwrap();
+        let file = File::create(data_packs.join("test.zip")).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("pack.mcmeta", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(metadata()).unwrap();
+        zip.start_file(
+            "data/example/recipe/kindling.json",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(
+            br##"{"type":"minecraft:crafting_shaped","key":{"L":"#minecraft:logs","S":"minecraft:stick"},"pattern":["SS","LL"],"result":{"id":"minecraft:campfire","components":{"minecraft:block_state":{"lit":"false"}}}}"##,
+        )
+        .unwrap();
+        zip.start_file(
+            "data/example/advancement/root.json",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(
+            br#"{"display":{"icon":{"id":"minecraft:campfire"},"title":{"text":"Kindling"},"description":{"text":"Make kindling"}},"criteria":{"tick":{"trigger":"minecraft:tick"}}}"#,
+        )
+        .unwrap();
+        zip.start_file(
+            "data/minecraft/loot_table/blocks/gravel.json",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(
+            br#"{"type":"minecraft:block","pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:flint"}]}]}"#,
+        )
+        .unwrap();
+        zip.finish().unwrap();
+
+        let manager = DataPackManager::load(temp.path());
+
+        assert_eq!(manager.recipes.len(), 1);
+        assert_eq!(manager.advancements.len(), 1);
+        assert!(manager.block_loot_tables.contains_key("gravel"));
+        assert_eq!(manager.advancements()[0].id.to_string(), "example:root");
     }
 
     #[test]

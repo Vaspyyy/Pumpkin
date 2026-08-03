@@ -21,6 +21,13 @@ impl RecipeManager {
         }
     }
 
+    #[must_use]
+    pub fn with_recipes(recipes: Vec<DynamicRecipe>) -> Self {
+        Self {
+            dynamic_recipes: RwLock::new(recipes),
+        }
+    }
+
     pub async fn add_recipe(&self, recipe: DynamicRecipe) {
         let mut recipes = self.dynamic_recipes.write().await;
         recipes.push(recipe);

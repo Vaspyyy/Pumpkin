@@ -1,6 +1,7 @@
 use crate::entity::player::Player;
 use crate::entity::player::advancement::{AdvancementDataError, PlayerAdvancement};
 use pumpkin_data::Advancement;
+use pumpkin_protocol::java::client::play::ClientAdvancement;
 use pumpkin_util::identifier::Identifier;
 use std::fs::create_dir_all;
 use std::path::PathBuf;
@@ -13,11 +14,20 @@ use uuid::Uuid;
 pub struct AdvancementManager {
     pub advancement_path: PathBuf,
     pub save_enabled: bool,
+    pub data_pack_advancements: Arc<[ClientAdvancement]>,
 }
 
 impl AdvancementManager {
     /// Creates a new instance of `AdvancementManager` using the player data path.
     pub fn new(player_data_path: impl Into<PathBuf>, save_enabled: bool) -> Self {
+        Self::with_data_pack_advancements(player_data_path, save_enabled, Vec::new())
+    }
+
+    pub fn with_data_pack_advancements(
+        player_data_path: impl Into<PathBuf>,
+        save_enabled: bool,
+        data_pack_advancements: Vec<ClientAdvancement>,
+    ) -> Self {
         let path = player_data_path.into().join("advancements");
         if !path.exists()
             && let Err(e) = create_dir_all(&path)
@@ -30,6 +40,7 @@ impl AdvancementManager {
         Self {
             advancement_path: path,
             save_enabled,
+            data_pack_advancements: data_pack_advancements.into(),
         }
     }
 
@@ -37,7 +48,13 @@ impl AdvancementManager {
     #[must_use]
     #[inline]
     pub fn get_advancements(&self) -> Vec<Identifier> {
-        Advancement::get_identifier_list().to_vec()
+        let mut advancements = Advancement::get_identifier_list().to_vec();
+        advancements.extend(
+            self.data_pack_advancements
+                .iter()
+                .map(|advancement| advancement.id.clone()),
+        );
+        advancements
     }
 
     /// Creates and returns a new instance of `PlayerAdvancement` with the configured path.

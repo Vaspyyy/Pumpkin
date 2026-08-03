@@ -17,13 +17,14 @@ impl HostRecipeManager for PluginHostState {
     async fn register_shaped(
         &mut self,
         _res: Resource<WitRecipeManager>,
-        _id: String,
+        id: String,
         recipe: WitShapedRecipe,
     ) -> wasmtime::Result<()> {
         let result_stack = self.get_item_stack(&recipe.output)?;
         let result_stack = result_stack.lock().await;
 
         let owned_recipe = OwnedCraftingRecipe::Shaped {
+            recipe_id: id,
             category: RecipeCategoryTypes::Misc, // TODO: Allow specifying category
             group: recipe.group,
             show_notification: true,
@@ -34,8 +35,7 @@ impl HostRecipeManager for PluginHostState {
                 .collect(),
             pattern: recipe.pattern,
             result: OwnedRecipeResult {
-                item_id: result_stack.item.registry_key.to_string(),
-                count: result_stack.item_count,
+                item_stack: result_stack.clone(),
             },
         };
 
@@ -53,13 +53,14 @@ impl HostRecipeManager for PluginHostState {
     async fn register_shapeless(
         &mut self,
         _res: Resource<WitRecipeManager>,
-        _id: String,
+        id: String,
         recipe: WitShapelessRecipe,
     ) -> wasmtime::Result<()> {
         let result_stack = self.get_item_stack(&recipe.output)?;
         let result_stack = result_stack.lock().await;
 
         let owned_recipe = OwnedCraftingRecipe::Shapeless {
+            recipe_id: id,
             category: RecipeCategoryTypes::Misc,
             group: recipe.group,
             ingredients: recipe
@@ -68,8 +69,7 @@ impl HostRecipeManager for PluginHostState {
                 .map(to_owned_ingredient)
                 .collect(),
             result: OwnedRecipeResult {
-                item_id: result_stack.item.registry_key.to_string(),
-                count: result_stack.item_count,
+                item_stack: result_stack.clone(),
             },
         };
 
@@ -102,8 +102,7 @@ impl HostRecipeManager for PluginHostState {
             cooking_time: recipe.cooking_time as i32,
             experience: recipe.experience,
             result: OwnedRecipeResult {
-                item_id: result_stack.item.registry_key.to_string(),
-                count: result_stack.item_count,
+                item_stack: result_stack.clone(),
             },
         };
 

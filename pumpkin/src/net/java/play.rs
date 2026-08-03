@@ -2358,7 +2358,7 @@ impl JavaClient {
         let item_id = stack.item.id;
         if let Some(block) = Block::from_item_id(item_id) {
             should_try_decrement = self
-                .run_is_block_place(player, block, server, use_item_on, position, face)
+                .run_is_block_place(player, &stack, block, server, use_item_on, position, face)
                 .await?;
         }
 
@@ -2813,9 +2813,11 @@ impl JavaClient {
         );
     }
 
+    #[expect(clippy::too_many_arguments)]
     async fn run_is_block_place(
         &self,
         player: &Arc<Player>,
+        item_stack: &ItemStack,
         block: &'static Block,
         server: &Server,
         use_item_on: SUseItemOn,
@@ -2824,7 +2826,15 @@ impl JavaClient {
     ) -> Result<bool, BlockPlacingError> {
         match server
             .block_registry
-            .place_block(player, block, server, &use_item_on, location, face)
+            .place_block(
+                player,
+                item_stack,
+                block,
+                server,
+                &use_item_on,
+                location,
+                face,
+            )
             .await
         {
             Ok(Some((final_block_pos, new_state))) => {

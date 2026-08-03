@@ -365,7 +365,11 @@ impl PlayerAdvancement {
                 }
             }
             self.progress_changed.clear();
-            if !progress.is_empty() || !added.is_empty() || !removed.is_empty() {
+            if self.is_first_packet
+                || !progress.is_empty()
+                || !added.is_empty()
+                || !removed.is_empty()
+            {
                 let player = player.clone();
                 let parsed_progress: Vec<AdvancementProgressData> = progress
                     .into_iter()
@@ -384,6 +388,10 @@ impl PlayerAdvancement {
                     })
                     .collect();
                 let first_packet = self.is_first_packet;
+                let mut added = added.into_iter().map(Into::into).collect::<Vec<_>>();
+                if first_packet {
+                    added.extend(self.manager.data_pack_advancements.iter().cloned());
+                }
                 tokio::spawn(async move {
                     player
                         .client

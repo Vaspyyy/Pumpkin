@@ -446,7 +446,17 @@ pub async fn drop_loot(
     experience: bool,
     params: LootContextParameters,
 ) {
-    if let Some(loot_table) = &block.loot_table {
+    let data_pack_loot_table = world.server.upgrade().and_then(|server| {
+        server
+            .data_pack_manager
+            .block_loot_table(block)
+            .map(|loot_table| loot_table.get_loot(&params))
+    });
+    if let Some(stacks) = data_pack_loot_table {
+        for stack in stacks {
+            world.drop_stack(pos, stack).await;
+        }
+    } else if let Some(loot_table) = &block.loot_table {
         for stack in loot_table.get_loot(params) {
             world.drop_stack(pos, stack).await;
         }

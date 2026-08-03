@@ -1,7 +1,9 @@
 use pumpkin_data::recipes::RecipeCategoryTypes;
 
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::tag::Taggable;
+use std::fmt;
 
 #[derive(Clone, Debug)]
 pub enum OwnedRecipeIngredient {
@@ -29,16 +31,26 @@ impl OwnedRecipeIngredient {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OwnedRecipeResult {
-    pub item_id: String,
-    pub count: u8,
-    // TODO: Add components/enchantments if needed for the display result
+    pub item_stack: ItemStack,
+}
+
+impl fmt::Debug for OwnedRecipeResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OwnedRecipeResult")
+            .field("item", &self.item_stack.item.registry_key)
+            .field("count", &self.item_stack.item_count)
+            .field("components", &self.item_stack.patch.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum OwnedCraftingRecipe {
     Shaped {
+        recipe_id: String,
         category: RecipeCategoryTypes,
         group: Option<String>,
         show_notification: bool,
@@ -47,6 +59,7 @@ pub enum OwnedCraftingRecipe {
         result: OwnedRecipeResult,
     },
     Shapeless {
+        recipe_id: String,
         category: RecipeCategoryTypes,
         group: Option<String>,
         ingredients: Vec<OwnedRecipeIngredient>,

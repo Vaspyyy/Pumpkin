@@ -146,7 +146,7 @@ use crate::server::Server;
 use crate::world::World;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_rotation::{Mirror, Rotation};
-use pumpkin_data::data_component_impl::EquipmentSlot;
+use pumpkin_data::data_component_impl::{BlockStateImpl, EquipmentSlot};
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -456,9 +456,11 @@ impl BlockRegistry {
     }
 
     #[expect(clippy::too_many_lines)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn place_block(
         &self,
         player: &Arc<Player>,
+        item_stack: &ItemStack,
         placed_block: &'static Block,
         server: &Server,
         use_item_on: &SUseItemOn,
@@ -581,7 +583,7 @@ impl BlockRegistry {
             return Ok(None);
         }
 
-        let new_state = self
+        let mut new_state = self
             .on_place(
                 server,
                 &world,
@@ -593,6 +595,28 @@ impl BlockRegistry {
                 use_item_on,
             )
             .await;
+
+        if let Some(component) = item_stack.get_data_component::<BlockStateImpl>()
+            && let Some(properties) = placed_block.properties(new_state)
+        {
+            let mut merged = properties
+                .to_props()
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<Vec<_>>();
+            for (key, value) in component.properties.iter() {
+                if let Some((_, current)) = merged.iter_mut().find(|(name, _)| name == key) {
+                    *current = value.to_string();
+                }
+            }
+            let properties = merged
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect::<Vec<_>>();
+            new_state = placed_block
+                .from_properties(&properties)
+                .to_state_id(placed_block);
+        }
 
         // Mirror vanilla obstruction checks: only entities that block building should prevent
         // placement. (e.g. arrows/xp orbs/displays/markers should not)

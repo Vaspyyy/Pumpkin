@@ -238,10 +238,6 @@ impl Server {
             Duration::from_secs(advanced_config.player_data.save_player_cron_interval),
             advanced_config.player_data.save_player_data,
         );
-        let advancement_manager = Arc::new(AdvancementManager::new(
-            players_dir.clone(),
-            advanced_config.advancement.save_advancements,
-        ));
         let white_list = AtomicBool::new(basic_config.white_list);
 
         let tick_rate_manager = Arc::new(ServerTickRateManager::new(basic_config.tps));
@@ -282,6 +278,12 @@ impl Server {
         let data_pack_manager = data_pack_loader
             .await
             .expect("Data pack loading task panicked");
+        let data_pack_recipes = data_pack_manager.recipes();
+        let advancement_manager = Arc::new(AdvancementManager::with_data_pack_advancements(
+            players_dir.clone(),
+            advanced_config.advancement.save_advancements,
+            data_pack_manager.advancements(),
+        ));
         let function_scheduler = Arc::new(FunctionScheduler::new(
             &level_info.load().scheduled_events,
             level_info.load().game_time,
@@ -299,7 +301,7 @@ impl Server {
             ))),
             permission_registry,
             container_id: 0.into(),
-            recipe_manager: Arc::new(recipe::RecipeManager::new()),
+            recipe_manager: Arc::new(recipe::RecipeManager::with_recipes(data_pack_recipes)),
             map_id: level_info.load().map_id.into(),
             worlds: ArcSwap::from_pointee(vec![]),
             dimensions,
