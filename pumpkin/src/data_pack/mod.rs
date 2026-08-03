@@ -1338,6 +1338,7 @@ fn parse_function(id: &Identifier, contents: &[u8]) -> Result<DataPackFunction, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pumpkin_protocol::ClientPacket;
     use std::io::Write;
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
@@ -1524,6 +1525,15 @@ mod tests {
         )
         .unwrap();
         zip.start_file(
+            "data/example/recipe/matcha_food.json",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(
+            br#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:bowl"],"result":{"id":"minecraft:rabbit_stew","components":{"minecraft:custom_model_data":{"floats":[1.0],"flags":[true],"strings":["matcha:food"],"colors":[3365222]}}}}"#,
+        )
+        .unwrap();
+        zip.start_file(
             "data/example/advancement/root.json",
             SimpleFileOptions::default(),
         )
@@ -1545,10 +1555,17 @@ mod tests {
 
         let manager = DataPackManager::load(temp.path());
 
-        assert_eq!(manager.recipes.len(), 1);
+        assert_eq!(manager.recipes.len(), 2);
         assert_eq!(manager.advancements.len(), 1);
         assert!(manager.block_loot_tables.contains_key("gravel"));
         assert_eq!(manager.advancements()[0].id.to_string(), "example:root");
+
+        let recipes = manager.recipes();
+        let mut packet = Vec::new();
+        pumpkin_protocol::java::client::play::CRecipeBookAdd::new(true, &recipes)
+            .write_packet_data(&mut packet, &JavaMinecraftVersion::V_26_2)
+            .unwrap();
+        assert!(!packet.is_empty());
     }
 
     #[test]

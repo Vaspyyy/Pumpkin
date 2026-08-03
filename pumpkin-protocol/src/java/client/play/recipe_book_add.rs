@@ -12,7 +12,9 @@ use pumpkin_util::version::JavaMinecraftVersion;
 use std::borrow::Cow;
 use std::{collections::HashMap, io::Write};
 
-use crate::codec::item_stack_seralizer::ItemStackTemplateSerializer;
+use crate::codec::{
+    data_component::supports_serialization, item_stack_seralizer::ItemStackTemplateSerializer,
+};
 use crate::{ClientPacket, VarInt, WritingError, ser::NetworkWriteExt};
 
 // Recipe Display type IDs
@@ -797,7 +799,11 @@ fn write_dynamic_result_slot_display(
     if result.item_stack.is_empty() {
         write_empty_slot_display(write)?;
     } else {
-        write_owned_item_stack_slot_display(write, &result.item_stack, version)?;
+        let mut display_stack = result.item_stack.clone();
+        display_stack
+            .patch
+            .retain(|(id, value)| value.is_none() || supports_serialization(*id));
+        write_owned_item_stack_slot_display(write, &display_stack, version)?;
     }
     Ok(())
 }
@@ -915,4 +921,68 @@ fn write_dynamic_cooking_entry(
     write_dynamic_ingredient_holderset(write, Some(&cooking.ingredient), version)?;
     write.write_u8(flags)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::recipe::{
+        DynamicRecipe, OwnedCraftingRecipe, OwnedRecipeIngredient, OwnedRecipeResult,
+    };
+    use pumpkin_data::data_component::DataComponent;
+    use pumpkin_data::data_component_impl::{
+        BlockStateImpl, CustomModelDataImpl, DataComponentImpl, MaxDamageImpl,
+    };
+
+    #[test]
+    fn dynamic_recipe_result_components_serialize_for_26_2() {
+        let result_item = Item::from_registry_key("campfire").unwrap();
+        let result = ItemStack::new_with_component(
+            1,
+            result_item,
+            vec![
+                (
+                    DataComponent::BlockState,
+                    Some(
+                        BlockStateImpl {
+                            properties: Cow::Owned(vec![(
+                                Cow::Borrowed("lit"),
+                                Cow::Borrowed("false"),
+                            )]),
+                        }
+                        .to_dyn(),
+                    ),
+                ),
+                (
+                    DataComponent::CustomModelData,
+                    Some(
+                        CustomModelDataImpl {
+                            floats: vec![1.0],
+                            flags: vec![true],
+                            strings: vec!["matcha:test".into()],
+                            colors: vec![0x33_99_66],
+                        }
+                        .to_dyn(),
+                    ),
+                ),
+                (
+                    DataComponent::MaxDamage,
+                    Some(MaxDamageImpl { max_damage: 1 }.to_dyn()),
+                ),
+            ],
+        );
+        let recipes = vec![DynamicRecipe::Crafting(OwnedCraftingRecipe::Shapeless {
+            recipe_id: "matcha:test".into(),
+            category: RecipeCategoryTypes::Misc,
+            group: None,
+            ingredients: vec![OwnedRecipeIngredient::Simple("minecraft:stick".into())],
+            result: OwnedRecipeResult { item_stack: result },
+        })];
+
+        let mut encoded = Vec::new();
+        CRecipeBookAdd::new(true, &recipes)
+            .write_packet_data(&mut encoded, &JavaMinecraftVersion::V_26_2)
+            .unwrap();
+        assert!(!encoded.is_empty());
+    }
 }
