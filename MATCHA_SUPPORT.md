@@ -44,7 +44,7 @@ All 2,095 datapack JSON files parse as valid JSON.
 | Scoreboard commands, criteria, persistence, display slots, render types, automatic criteria, and WIT API | `31d1cad4` | [Pumpkin #2658](https://github.com/Pumpkin-MC/Pumpkin/pull/2658) | Integrated on current upstream |
 | Execute modifier chaining | `9750ac25` | [Pumpkin #2609](https://github.com/Pumpkin-MC/Pumpkin/pull/2609) | Integrated on current upstream |
 | False/empty modifier result propagation | `7427a928` | Follow-up branch `agent/command-chain-pr-ready` | Integrated on current upstream |
-| Scoreboard WIT definitions | `ca0eef91732dd6416d7454eee36c034d3c5bbc73` | [pumpkin-plugin-wit #25](https://github.com/Pumpkin-MC/pumpkin-plugin-wit/pull/25) | Mirrored and pinned |
+| Scoreboard WIT definitions | `588e5c53ef7b6d52f508bd0cd6174dba6259b11c` | [pumpkin-plugin-wit #25](https://github.com/Pumpkin-MC/pumpkin-plugin-wit/pull/25) | Mirrored, merged with current upstream WIT, and pinned |
 
 The submodule URL intentionally points to
 [`Vaspyyy/pumpkin-plugin-wit`](https://github.com/Vaspyyy/pumpkin-plugin-wit),
