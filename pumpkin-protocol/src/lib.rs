@@ -402,8 +402,11 @@ impl NumberFormat {
             Self::Blank => write.write_var_int(&0.into()),
             Self::Styled(style) => {
                 write.write_var_int(&1.into())?;
-                pumpkin_nbt::serializer::to_bytes_unnamed(style, write)
-                    .map_err(|err| ser::WritingError::Serde(err.to_string()))
+                let mut component = TextComponent::empty();
+                *component.0.style = style.clone();
+                let mut compound = component.0.to_nbt_compound();
+                compound.child_tags.remove("text");
+                write.write_slice(&pumpkin_nbt::Nbt::from(compound).write_unnamed())
             }
             Self::Fixed(text) => {
                 write.write_var_int(&2.into())?;

@@ -10,7 +10,6 @@ use pumpkin_data::{
     item_stack::ItemStack,
 };
 use pumpkin_inventory::screen_handler::{InventoryPlayer, ScreenHandler};
-use pumpkin_macros::send_cancellable;
 use pumpkin_protocol::bedrock::{
     client::inventory_content::CInventoryContent,
     network_item::{
@@ -209,7 +208,7 @@ impl BedrockClient {
         &self,
         player: &Arc<Player>,
         packet: SPlayerAuthInput,
-        server: &Server,
+        server: &Arc<Server>,
     ) {
         if !player.has_client_loaded() {
             return;
@@ -840,7 +839,7 @@ impl BedrockClient {
                     }
 
                     send_cancellable! {{
-                        server;
+                        &server;
                         event;
                         'after: {
                             server.item_registry.on_use(&stack_for_use, player).await;
@@ -1013,7 +1012,7 @@ impl BedrockClient {
 
     pub async fn handle_chat_message(
         &self,
-        server: &Server,
+        server: &Arc<Server>,
         player: &Arc<Player>,
         packet: SText<'_>,
     ) {
@@ -1237,15 +1236,16 @@ impl BedrockClient {
     pub async fn handle_modal_form_response(
         &self,
         player: &Arc<Player>,
-        server: &Server,
+        server: &Arc<Server>,
         packet: pumpkin_protocol::bedrock::server::modal_form_response::SModalFormResponse<'_>,
     ) {
-        let event = crate::plugin::api::events::player::bedrock_form_response::BedrockFormResponseEvent::new(
-            player.clone(),
-            packet.form_id.0 as u32,
-            packet.form_data.map(std::borrow::Cow::into_owned),
-        );
-        let _ = server.plugin_manager.fire(event).await;
+        let mut event =
+            crate::plugin::api::events::player::bedrock_form_response::BedrockFormResponseEvent::new(
+                player.clone(),
+                packet.form_id.0 as u32,
+                packet.form_data.map(std::borrow::Cow::into_owned),
+            );
+        server.plugin_manager.fire(server, &mut event).await;
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1798,7 +1798,12 @@ impl BedrockClient {
         .await;
     }
 
-    pub async fn handle_mob_equipment(&self, player: &Arc<Player>, packet: SMobEquipment) {
+    pub async fn handle_mob_equipment(
+        &self,
+        _server: &Arc<Server>,
+        player: &Arc<Player>,
+        packet: SMobEquipment,
+    ) {
         player.update_last_action_time();
         let slot = packet.hotbar_slot;
         if slot >= 9 {
@@ -1806,9 +1811,13 @@ impl BedrockClient {
         }
         let previous_slot = player.inventory.get_selected_slot();
         if let Some(server) = player.world().server.upgrade() {
-            let event = PlayerItemHeldEvent::new(player.clone(), previous_slot, slot);
-            let event = server.plugin_manager.fire(event).await;
-            if event.cancelled {
+            let mut event = PlayerItemHeldEvent::new(player.clone(), previous_slot, slot);
+            server.plugin_manager.fire(&server, &mut event).await;
+            let is_cancelled = {
+                use crate::plugin::Cancellable;
+                event.cancelled()
+            };
+            if is_cancelled {
                 self.enqueue_packet(&CPlayerHotbar {
                     selected_slot: VarUInt(previous_slot as u32),
                     container_id: 0,

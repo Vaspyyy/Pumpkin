@@ -34,7 +34,6 @@ use pumpkin_world::world::WorldPortalExt;
 use tracing::{debug, error, info, warn};
 
 use crate::command::CommandSender;
-use pumpkin_macros::send_cancellable;
 use pumpkin_protocol::java::client::login::CEncryptionRequest;
 use pumpkin_protocol::java::client::play::{CChangeDifficulty, CTabList};
 use pumpkin_protocol::{ClientPacket, java::client::config::CPluginMessage};
@@ -492,6 +491,12 @@ impl Server {
                 new_worlds.push(world.clone());
                 new_worlds
             });
+            let mut event =
+                crate::plugin::api::events::world::world_init::WorldInitEvent::new(world.clone());
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(server.plugin_manager.fire(&server, &mut event));
+            });
             world
         })
         .await
@@ -524,7 +529,7 @@ impl Server {
     ///
     /// You still have to spawn the `Player` in a `World` to let them join and make them visible.
     pub async fn add_player(
-        &self,
+        self: &Arc<Self>,
         client: Arc<ClientPlatform>,
         profile: GameProfile,
         config: Option<PlayerConfig>,
@@ -593,7 +598,7 @@ impl Server {
 
         send_cancellable! {{
             self;
-            PlayerLoginEvent::new(player.clone(), TextComponent::text("You have been kicked from the server"));
+            &mut PlayerLoginEvent::new(player.clone(), TextComponent::text("You have been kicked from the server"));
             'after: {
                 player.screen_handler_sync_handler.store_player(player.clone()).await;
                 if world
@@ -710,7 +715,7 @@ impl Server {
     }
 
     pub async fn broadcast_message(
-        &self,
+        self: &Arc<Self>,
         message: &TextComponent,
         sender_name: &TextComponent,
         chat_type: u8,
